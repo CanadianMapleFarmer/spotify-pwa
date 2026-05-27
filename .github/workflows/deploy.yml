@@ -43,7 +43,7 @@ jobs:
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
-          projectId: spotify-tv-pwa
+          projectId: spotify-pwa-6969
           channelId: live
 
       - name: Deploy preview (pull request)
@@ -52,5 +52,5 @@ jobs:
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
-          projectId: spotify-tv-pwa
+          projectId: spotify-pwa-6969
           expires: 7d
