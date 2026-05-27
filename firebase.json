@@ -12,7 +12,9 @@
       "README.md",
       ".github/**",
       "package.json",
-      "package-lock.json"
+      "package-lock.json",
+      "firebase-debug.log",
+      "firebase-debug.*.log"
     ],
     "cleanUrls": true,
     "trailingSlash": false,
