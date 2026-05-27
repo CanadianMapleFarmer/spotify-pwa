@@ -115,6 +115,10 @@ const elements = {
   toggleDebugView: document.querySelector("#toggleDebugView"),
   toggleDebugState: document.querySelector("#toggleDebugState"),
   viewAmbient: document.querySelector("#view-ambient"),
+  phonePairScreen: document.querySelector("#phonePairScreen"),
+  phonePairCode: document.querySelector("#phonePairCode"),
+  phonePairErrorMessage: document.querySelector("#phonePairErrorMessage"),
+  phonePairSuccessMessage: document.querySelector("#phonePairSuccessMessage"),
 };
 
 const actions = {
@@ -179,15 +183,22 @@ function init() {
   hydrateUiPreferences();
   registerServiceWorker();
   runDeviceChecks();
-  handleSpotifyRedirect().catch((error) => logError("Spotify redirect failed", error));
+  handleSpotifyRedirect().catch((error) => {
+    logError("Spotify redirect failed", error);
+    if (document.body.classList.contains("is-phone-pair")) {
+      renderPhonePairScreen("error", error.message || "Sign-in failed.");
+    }
+  });
   renderPairInfo();
   renderShellState();
   renderNpPill();
   renderAmbient();
   startProgressTimer();
   startBubbleCornerTimer();
-  scheduleSpotifyPlayerCreation("app init");
-  focusFirst();
+  if (!document.body.classList.contains("is-phone-pair")) {
+    scheduleSpotifyPlayerCreation("app init");
+    focusFirst();
+  }
 }
 
 function hydrateUiPreferences() {
@@ -781,6 +792,12 @@ async function checkPairToken() {
   if (!response.ok) {
     throw new Error(`Pair token fetch failed: ${response.status}`);
   }
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    // Backend endpoint not present (e.g. Firebase Hosting SPA fallback returned index.html).
+    // Treat as "not ready" so polling stays quiet instead of throwing JSON-parse errors.
+    return false;
+  }
 
   const session = await response.json();
   localStorage.setItem(storageKeys.accessToken, session.accessToken);
@@ -851,13 +868,33 @@ async function handleSpotifyRedirect() {
   localStorage.setItem(storageKeys.accessToken, token.access_token);
   if (token.refresh_token) localStorage.setItem(storageKeys.refreshToken, token.refresh_token);
   localStorage.setItem(storageKeys.expiresAt, String(expiresAt));
+
+  const isPhonePair = document.body.classList.contains("is-phone-pair");
+  let pairDeliveryError = null;
   if (pairCode) {
-    await postPairToken(pairCode, token.access_token, token.refresh_token || "", expiresAt);
+    try {
+      await postPairToken(pairCode, token.access_token, token.refresh_token || "", expiresAt);
+    } catch (deliveryError) {
+      pairDeliveryError = deliveryError;
+      logError("Pair token delivery failed", deliveryError);
+    }
   }
   history.replaceState({}, "", location.pathname);
-  elements.connectionStatus.textContent = "Signed in";
+  if (elements.connectionStatus) elements.connectionStatus.textContent = "Signed in";
   log("Spotify token exchange completed.", "success");
   renderSpotifyFacts();
+
+  if (isPhonePair) {
+    if (pairDeliveryError) {
+      renderPhonePairScreen("error", pairDeliveryError.message);
+    } else if (pairCode) {
+      renderPhonePairScreen("success");
+    } else {
+      renderPhonePairScreen("success", "You're signed in.");
+    }
+    return;
+  }
+
   scheduleSpotifyPlayerCreation("redirect login");
   await refreshAll();
 }
@@ -865,11 +902,17 @@ async function handleSpotifyRedirect() {
 async function postPairToken(pairCode, accessToken, refreshToken, expiresAt) {
   const response = await fetch("/__spotify-session", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ pairCode, accessToken, refreshToken, expiresAt }),
   });
   if (!response.ok) {
     throw new Error(`Pair token post failed: ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    // Backend missing — POST hit the SPA fallback and returned HTML.
+    // The token was NOT delivered to the TV; surface that explicitly.
+    throw new Error("Pair backend not reachable. Token was not delivered to your TV.");
   }
   log(`Pair token posted for ${pairCode}.`, "success");
 }
@@ -1494,10 +1537,33 @@ function spotifyRedirectUri() {
 function applyUrlState() {
   const params = new URLSearchParams(location.search);
   const pairCode = normalizePairCode(params.get("pair"));
-  document.body.classList.toggle("is-phone-pair", params.get("phone") === "1");
+  const isPhonePair = params.get("phone") === "1";
+  document.body.classList.toggle("is-phone-pair", isPhonePair);
   if (pairCode) {
     localStorage.setItem(storageKeys.pairCode, pairCode);
     log(`Pair login mode active. Code=${pairCode}`);
+  }
+  if (isPhonePair) {
+    if (elements.phonePairScreen) elements.phonePairScreen.hidden = false;
+    renderPhonePairScreen("ready");
+  }
+}
+
+function renderPhonePairScreen(stateName, message) {
+  const screen = elements.phonePairScreen;
+  if (!screen) return;
+  if (stateName) screen.dataset.state = stateName;
+  if (elements.phonePairCode) {
+    const code = getPairCode();
+    elements.phonePairCode.textContent = code ? code.padEnd(6, "•") : "------";
+  }
+  if (message) {
+    if (stateName === "error" && elements.phonePairErrorMessage) {
+      elements.phonePairErrorMessage.textContent = message;
+    }
+    if (stateName === "success" && elements.phonePairSuccessMessage) {
+      elements.phonePairSuccessMessage.textContent = message;
+    }
   }
 }
 
