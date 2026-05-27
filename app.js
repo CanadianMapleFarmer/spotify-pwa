@@ -662,19 +662,50 @@ function createMediaCard(item, type) {
 
 async function playItem(item, type) {
   requireAccessToken();
-  if (type === "playlist" || type === "album") {
-    await spotifyApiFetch("/v1/me/player/play", {
-      method: "PUT",
-      body: JSON.stringify({ context_uri: item.uri }),
-    });
-  } else {
-    await spotifyApiFetch("/v1/me/player/play", {
-      method: "PUT",
-      body: JSON.stringify({ uris: [item.uri] }),
-    });
+  await ensureSpotifyDeviceReady();
+  const body = (type === "playlist" || type === "album")
+    ? { context_uri: item.uri }
+    : { uris: [item.uri] };
+  const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/play"), {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const detail = await readSpotifyError(response);
+    throw new Error(`Spotify play failed (${response.status}): ${detail}`);
   }
   log(`Requested playback: ${item.name}`, "success");
   await getCurrentPlayback();
+}
+
+function withDeviceIdParam(path) {
+  if (!state.spotifyDeviceId) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}device_id=${encodeURIComponent(state.spotifyDeviceId)}`;
+}
+
+async function ensureSpotifyDeviceReady() {
+  if (state.spotifyDeviceId && state.spotifyPlayer) return state.spotifyDeviceId;
+  try {
+    return await createSpotifyPlayer();
+  } catch (error) {
+    throw new Error(`TV player not ready: ${error?.message || error}`);
+  }
+}
+
+async function readSpotifyError(response) {
+  try {
+    const text = await response.text();
+    if (!text) return "no body";
+    try {
+      const parsed = JSON.parse(text);
+      return parsed?.error?.message || parsed?.error?.reason || text.slice(0, 200);
+    } catch {
+      return text.slice(0, 200);
+    }
+  } catch {
+    return "unreadable body";
+  }
 }
 
 function clearKeys() {
@@ -1134,13 +1165,17 @@ async function toggleSpotifyPlayback() {
 }
 
 async function nextTrack() {
-  await spotifyApiFetch("/v1/me/player/next", { method: "POST" });
+  await ensureSpotifyDeviceReady();
+  const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/next"), { method: "POST" });
+  if (!response.ok) throw new Error(`Spotify next failed (${response.status}): ${await readSpotifyError(response)}`);
   log("Spotify next track requested.", "success");
   window.setTimeout(() => getCurrentPlayback().catch((error) => logError("Playback refresh failed", error)), 800);
 }
 
 async function previousTrack() {
-  await spotifyApiFetch("/v1/me/player/previous", { method: "POST" });
+  await ensureSpotifyDeviceReady();
+  const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/previous"), { method: "POST" });
+  if (!response.ok) throw new Error(`Spotify previous failed (${response.status}): ${await readSpotifyError(response)}`);
   log("Spotify previous track requested.", "success");
   window.setTimeout(() => getCurrentPlayback().catch((error) => logError("Playback refresh failed", error)), 800);
 }
@@ -1166,15 +1201,16 @@ async function transferToDevice(deviceId) {
 async function getCurrentPlayback() {
   const response = await spotifyApiFetch("/v1/me/player", { method: "GET" });
   if (response.status === 204) {
-    log("Spotify current playback: no active playback.", "error");
+    // 204 = no active playback. Not an error — common after pause or before any device is active.
+    log("Spotify current playback: no active playback.");
     return;
+  }
+  if (!response.ok) {
+    throw new Error(`Spotify getCurrentPlayback failed (${response.status}): ${await readSpotifyError(response)}`);
   }
   const playback = await response.json();
   updateNowPlayingFromWebApi(playback);
-  log(
-    `Spotify current playback: device=${playback.device?.name || "unknown"} active=${playback.device?.is_active} playing=${playback.is_playing} item=${playback.item?.name || "unknown"}`,
-    response.ok ? "success" : "error"
-  );
+  log(`Spotify current playback: device=${playback.device?.name || "unknown"} active=${playback.device?.is_active} playing=${playback.is_playing} item=${playback.item?.name || "unknown"}`);
 }
 
 function volumeDown() {
