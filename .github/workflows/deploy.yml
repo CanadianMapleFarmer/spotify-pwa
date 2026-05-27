@@ -46,13 +46,18 @@ jobs:
 
       - name: Deploy Firestore rules
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
         env:
           FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
         run: |
           set -euo pipefail
           echo "$FIREBASE_SA" > "$RUNNER_TEMP/sa.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
-          npx --yes firebase-tools@13 deploy --only firestore:rules --project spotify-pwa-6969 --non-interactive
+          if npx --yes firebase-tools@13 deploy --only firestore:rules --project spotify-pwa-6969 --non-interactive; then
+            echo "Firestore rules deployed."
+          else
+            echo "::warning::Firestore rules deploy failed — usually means Firestore isn't enabled yet on the project. Enable it in the Firebase Console (Build → Firestore Database → Create database), then re-run this workflow."
+          fi
 
       - name: Deploy live (push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
