@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Local tooling
+.serena/
+.claude/
+
+# Dependencies (no build step today, but reserve)
+node_modules/
+
+# Logs / runtime
+*.log
+.spotify-sessions.json
+firebase-debug.log
+firebase-debug.*.log
+
+# Build artifacts
+.cache/
+dist/
+.firebase/
+
+# Secrets
+.env
+.env.*
+serviceAccount.json

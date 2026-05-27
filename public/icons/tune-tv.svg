@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Tune TV</title>
+  <desc id="desc">A custom music streaming TV icon with a play mark and broadcast waves.</desc>
+  <defs>
+    <linearGradient id="screen" x1="104" y1="70" x2="408" y2="442" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#182235"/>
+      <stop offset="0.52" stop-color="#0b111b"/>
+      <stop offset="1" stop-color="#06090f"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="142" y1="110" x2="374" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#78f49b"/>
+      <stop offset="1" stop-color="#22c66b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="86" fill="#080b10"/>
+  <rect x="84" y="104" width="344" height="252" rx="42" fill="url(#screen)" stroke="#26354d" stroke-width="18"/>
+  <path d="M184 406h144" stroke="#26354d" stroke-width="24" stroke-linecap="round"/>
+  <path d="M222 358h68" stroke="#26354d" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="256" cy="230" r="96" fill="url(#glow)"/>
+  <path d="M233 188l74 42-74 42z" fill="#081018"/>
+  <path d="M170 198c40-29 110-39 170-17" fill="none" stroke="#081018" stroke-width="22" stroke-linecap="round"/>
+  <path d="M178 270c42 24 112 29 163 9" fill="none" stroke="#081018" stroke-width="22" stroke-linecap="round"/>
+  <path d="M404 92l38-38" stroke="#78f49b" stroke-width="18" stroke-linecap="round"/>
+  <path d="M432 132h54" stroke="#78f49b" stroke-width="18" stroke-linecap="round"/>
+  <path d="M68 92l-38-38" stroke="#63a6ff" stroke-width="18" stroke-linecap="round"/>
+  <path d="M80 132H26" stroke="#63a6ff" stroke-width="18" stroke-linecap="round"/>
+</svg>

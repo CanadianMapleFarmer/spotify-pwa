@@ -1,0 +1,56 @@
+name: Deploy to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+concurrency:
+  group: hosting-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify hosting payload
+        run: |
+          set -euo pipefail
+          test -f index.html
+          test -f app.js
+          test -f styles.css
+          test -f service-worker.js
+          test -f manifest.webmanifest
+          test -f firebase.json
+          test -f .firebaserc
+          node --check app.js
+          echo "Payload OK"
+
+      - name: Deploy live (push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
+          projectId: spotify-tv-pwa
+          channelId: live
+
+      - name: Deploy preview (pull request)
+        if: github.event_name == 'pull_request'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
+          projectId: spotify-tv-pwa
+          expires: 7d

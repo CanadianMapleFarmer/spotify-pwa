@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#080b10">
+    <title>Spotify TV</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/public/icons/spotify-logo.png" type="image/png">
+    <link rel="stylesheet" href="/styles.css">
+    <meta http-equiv="Cache-Control" content="no-store">
+  </head>
+  <body>
+    <div class="ambient-bg" id="ambientBg"></div>
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <main class="app" id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>
+            <p class="eyebrow">VIDAA Spotify</p>
+            <h1>Spotify TV</h1>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Primary">
+          <button class="focusable nav-item is-active" data-action="setView" data-view="home">Home</button>
+          <button class="focusable nav-item" data-action="setView" data-view="library">Library</button>
+          <button class="focusable nav-item" data-action="setView" data-view="now">Now Playing</button>
+          <button class="focusable nav-item" data-action="setView" data-view="devices">Devices</button>
+          <button class="focusable nav-item" data-action="setView" data-view="ambient">Ambient</button>
+          <button class="focusable nav-item" data-action="setView" data-view="settings">Settings</button>
+        </nav>
+      </header>
+
+      <section class="status-strip">
+        <span id="connectionStatus">Not signed in</span>
+        <span id="deviceStatus">No TV player</span>
+        <span id="keyStatus">Remote idle</span>
+      </section>
+
+      <section class="view is-visible" id="view-home" aria-label="Home">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">Home</p>
+            <h2>Listen Now</h2>
+          </div>
+          <button class="focusable icon-button" data-action="refreshAll">Refresh</button>
+        </div>
+        <div class="shelf" id="recentShelf"></div>
+        <div class="shelf" id="topShelf"></div>
+        <div class="shelf" id="albumShelf"></div>
+        <div class="shelf" id="savedShelf"></div>
+      </section>
+
+      <section class="view" id="view-library" aria-label="Library">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">Library</p>
+            <h2>Your Music</h2>
+          </div>
+          <button class="focusable icon-button" data-action="loadLibrary">Reload</button>
+        </div>
+        <div class="shelf" id="playlistShelf"></div>
+        <div class="shelf" id="libraryAlbumsShelf"></div>
+        <div class="shelf" id="libraryTracksShelf"></div>
+      </section>
+
+      <section class="view" id="view-now" aria-label="Now Playing">
+        <div class="now-layout">
+          <div class="art-frame">
+            <img id="nowArtwork" alt="">
+          </div>
+          <div class="now-meta">
+            <p class="eyebrow" id="nowContext">Nothing playing</p>
+            <h2 id="nowTitle">Ready when you are</h2>
+            <p id="nowArtist">Create the TV player and transfer playback here.</p>
+            <div class="progress">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="time-row">
+              <span id="positionText">0:00</span>
+              <span id="durationText">0:00</span>
+            </div>
+            <div class="transport">
+              <button class="focusable" data-action="previousTrack">Prev</button>
+              <button class="focusable primary" data-action="toggleSpotifyPlayback" id="playPauseButton">Play/Pause</button>
+              <button class="focusable" data-action="nextTrack">Next</button>
+              <button class="focusable" data-action="createSpotifyPlayer">Create TV Player</button>
+              <button class="focusable" data-action="transferPlayback">Transfer Here</button>
+              <button class="focusable" data-action="getCurrentPlayback">Update</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-devices" aria-label="Devices">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">Devices</p>
+            <h2>Spotify Connect</h2>
+          </div>
+          <button class="focusable icon-button" data-action="loadDevices">Refresh</button>
+        </div>
+        <div class="device-grid" id="devicesGrid"></div>
+      </section>
+
+      <section class="view ambient-view" id="view-ambient" aria-label="Ambient">
+        <div class="ambient-stage" id="ambientStage" data-mode="room">
+
+          <div class="ambient-room" id="ambientRoom" aria-hidden="true">
+            <span class="aurora aurora--a"></span>
+            <span class="aurora aurora--b"></span>
+            <span class="aurora aurora--c"></span>
+            <div class="ambient-room__art">
+              <img id="ambientRoomArt" alt="">
+            </div>
+          </div>
+
+          <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true">
+            <span class="drift drift--a" id="ambientDriftA"></span>
+            <span class="drift drift--b" id="ambientDriftB"></span>
+            <span class="drift drift--c" id="ambientDriftC"></span>
+            <span class="drift drift--d" id="ambientDriftD"></span>
+            <div class="np-bubble" id="ambientBubble" data-corner="bl">
+              <img id="ambientBubbleArt" alt="">
+              <div class="np-bubble__meta">
+                <p class="np-bubble__title" id="ambientBubbleTitle">Nothing playing</p>
+                <p class="np-bubble__artist" id="ambientBubbleArtist"></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="ambient-visualizer" id="ambientVisualizer" aria-hidden="true">
+            <canvas id="ambientVisualizerCanvas"></canvas>
+            <div class="ambient-visualizer__art">
+              <img id="ambientVisualizerArt" alt="">
+            </div>
+          </div>
+
+          <div class="ambient-content">
+            <p class="eyebrow" id="ambientModeLabel">Room Display</p>
+            <h2 id="ambientTitle">Nothing playing</h2>
+            <p id="ambientSubtitle">Start playback and this screen becomes the room display.</p>
+            <div class="ambient-progress" aria-hidden="true">
+              <span class="ambient-progress__track"><span class="ambient-progress__fill" id="ambientProgressFill"></span></span>
+              <span class="ambient-progress__time" id="ambientProgressTime">0:00 / 0:00</span>
+            </div>
+          </div>
+
+          <div class="ambient-controls" id="ambientControls">
+            <button class="focusable" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
+            <button class="focusable" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Screensaver</button>
+            <button class="focusable" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
+            <button class="focusable" data-action="previousTrack" aria-label="Previous track">Prev</button>
+            <button class="focusable" data-action="toggleSpotifyPlayback" aria-label="Play or pause">Play/Pause</button>
+            <button class="focusable" data-action="nextTrack" aria-label="Next track">Next</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view settings-view" id="view-settings" aria-label="Settings">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>Account & Playback</h2>
+          </div>
+          <button class="focusable icon-button" data-action="createSpotifyPlayer">Create TV Player</button>
+        </div>
+
+        <div class="auth-panel" id="authPanel">
+          <div class="auth-copy">
+            <p class="eyebrow">Pair Login</p>
+            <h2>Sign in on your phone</h2>
+            <p>
+              Create a pair login, scan the QR code, then the TV will pick up the token automatically.
+            </p>
+          </div>
+
+          <div class="auth-controls">
+            <div class="button-row">
+              <button class="focusable primary" data-action="createPairLogin">Create Pair Login</button>
+              <button class="focusable" data-action="checkPairToken">Check Token</button>
+              <button class="focusable subdued" data-action="loginSpotify" data-phone-only>Login Here</button>
+              <button class="focusable subdued" data-action="resetSpotify">Sign Out</button>
+            </div>
+          </div>
+
+          <div class="pair-card" id="pairCard" hidden>
+            <img id="pairQr" alt="Pair login QR code">
+            <div>
+              <p class="pair-code" id="pairCode">------</p>
+              <p class="pair-url" id="pairUrl">Create a pair login to generate a phone URL.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <p class="eyebrow">Developer</p>
+          <h3 class="settings-section__title">Debug</h3>
+          <button class="focusable settings-toggle" id="toggleDebugView" data-action="toggleDebugView" role="switch" aria-checked="false">
+            <span class="settings-toggle__label">Debug View</span>
+            <span class="settings-toggle__hint">Show diagnostic log, device facts, Spotify facts, and remote key readout as a floating panel.</span>
+            <span class="settings-toggle__state" id="toggleDebugState">Off</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="diagnostics" id="diagnostics" hidden aria-label="Diagnostics">
+        <div class="panel-heading">
+          <h2>Diagnostics</h2>
+          <button class="focusable subdued" data-action="clearLog">Clear</button>
+        </div>
+        <div class="diagnostics__grid">
+          <div class="diagnostics__col">
+            <p class="eyebrow">Device</p>
+            <dl id="deviceFacts"></dl>
+          </div>
+          <div class="diagnostics__col">
+            <p class="eyebrow">Spotify</p>
+            <dl id="spotifyFacts"></dl>
+          </div>
+          <div class="diagnostics__col">
+            <p class="eyebrow">Last remote key</p>
+            <output id="keyReadout">Waiting for key event</output>
+          </div>
+        </div>
+        <ol class="log" id="log" aria-live="polite"></ol>
+      </section>
+    </main>
+
+    <aside id="npPill" class="np-pill" hidden aria-label="Now playing controls">
+      <div class="np-pill__art" aria-hidden="true">
+        <img id="npPillArt" alt="">
+      </div>
+      <div class="np-pill__meta">
+        <p class="np-pill__title" id="npPillTitle">Nothing playing</p>
+        <p class="np-pill__artist" id="npPillArtist"></p>
+        <div class="np-pill__progress" aria-hidden="true">
+          <span class="np-pill__progress-fill" id="npPillProgressFill"></span>
+        </div>
+      </div>
+      <div class="np-pill__controls">
+        <button class="focusable np-pill__btn" data-action="previousTrack" aria-label="Previous track">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" fill="currentColor"/></svg>
+        </button>
+        <button class="focusable np-pill__btn np-pill__btn--primary" data-action="toggleSpotifyPlayback" aria-label="Play or pause" id="npPillPlayBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+        </button>
+        <button class="focusable np-pill__btn" data-action="nextTrack" aria-label="Next track">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" fill="currentColor"/></svg>
+        </button>
+        <button class="focusable np-pill__btn" data-action="setView" data-view="now" aria-label="Open Now Playing view">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5z" fill="currentColor" transform="rotate(180 12 12)"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <script src="/app.js?v=13" type="module"></script>
+  </body>
+</html>

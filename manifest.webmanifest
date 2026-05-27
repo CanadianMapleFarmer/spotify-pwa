@@ -1,0 +1,18 @@
+{
+  "name": "Spotify TV",
+  "short_name": "Spotify TV",
+  "description": "A VIDAA OS TV PWA for Spotify Connect playback.",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "icons": [
+    {
+      "src": "/public/icons/spotify-logo.png",
+      "sizes": "939x940",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
