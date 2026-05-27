@@ -34,8 +34,25 @@ jobs:
           test -f manifest.webmanifest
           test -f firebase.json
           test -f .firebaserc
+          test -f firestore.rules
           node --check app.js
           echo "Payload OK"
+
+      - name: Setup Node
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy Firestore rules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
+        run: |
+          set -euo pipefail
+          echo "$FIREBASE_SA" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          npx --yes firebase-tools@13 deploy --only firestore:rules --project spotify-pwa-6969 --non-interactive
 
       - name: Deploy live (push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

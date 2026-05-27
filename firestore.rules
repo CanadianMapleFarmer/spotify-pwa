@@ -1,0 +1,47 @@
+rules_version = '2';
+
+// Pair-session security model:
+// - Pair code is a short shared secret displayed on both the TV and the phone.
+// - Anyone who holds the code can read the session once (the TV deletes the doc
+//   immediately after consumption).
+// - Writes are unauthenticated but constrained: required fields only, payload
+//   size cap, and TTL bounded so stale sessions can't accumulate.
+// - Tokens are expected to be consumed within 10 minutes; reads of expired
+//   docs are blocked by the rule even if cleanup hasn't run.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /pairSessions/{pairCode} {
+      allow read: if request.time < resource.data.expireAt;
+
+      allow create: if
+        // Required + only-known field set
+        request.resource.data.keys().hasOnly(['accessToken', 'refreshToken', 'expiresAt', 'createdAt', 'expireAt'])
+        && request.resource.data.keys().hasAll(['accessToken', 'expiresAt', 'createdAt', 'expireAt'])
+        // Field types
+        && request.resource.data.accessToken is string
+        && request.resource.data.refreshToken is string
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.expireAt is timestamp
+        // Size cap — Spotify tokens are ~250 chars; refuse anything that looks like a payload smuggle
+        && request.resource.data.accessToken.size() < 4096
+        && request.resource.data.refreshToken.size() < 4096
+        // TTL bound: pair session can't claim a 1-year lifetime
+        && request.resource.data.expireAt < request.time + duration.value(15, 'm')
+        // Pair code shape (6–12 alphanumeric uppercase characters)
+        && pairCode.matches('^[A-Z0-9]{6,12}$');
+
+      // No partial updates — TV deletes and reissues if it wants a new session.
+      allow update: if false;
+
+      // Anyone with the code can delete (the TV cleans up after consuming).
+      allow delete: if true;
+    }
+
+    // Everything else: deny.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

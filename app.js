@@ -26,6 +26,8 @@ const storageKeys = {
 };
 
 const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
+const PAIR_SESSION_COLLECTION = "pairSessions";
+const PAIR_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes — long enough for a phone OAuth round trip
 
 const AMBIENT_MODES = ["room", "screensaver", "visualizer"];
 const AMBIENT_MODE_LABELS = {
@@ -825,27 +827,43 @@ async function checkPairToken() {
   const pairCode = getPairCode();
   if (!pairCode) throw new Error("Create a pair login first.");
 
-  const response = await fetch(`/__spotify-session?pairCode=${encodeURIComponent(pairCode)}`, {
-    headers: { Accept: "application/json" },
-  });
-  if (response.status === 404) {
-    log(`Pair token not ready for ${pairCode}.`);
-    return false;
-  }
-  if (!response.ok) {
-    throw new Error(`Pair token fetch failed: ${response.status}`);
-  }
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    // Backend endpoint not present (e.g. Firebase Hosting SPA fallback returned index.html).
-    // Treat as "not ready" so polling stays quiet instead of throwing JSON-parse errors.
+  const db = await getFirestoreOrNull();
+  if (!db) {
+    // Firestore not available — stay quiet rather than crash polling.
     return false;
   }
 
-  const session = await response.json();
+  let snap;
+  try {
+    snap = await db.collection(PAIR_SESSION_COLLECTION).doc(pairCode).get();
+  } catch (error) {
+    if (error?.code === "permission-denied") {
+      throw new Error("Pair session lookup denied. Check Firestore rules for pairSessions.");
+    }
+    throw error;
+  }
+  if (!snap.exists) {
+    log(`Pair token not ready for ${pairCode}.`);
+    return false;
+  }
+  const session = snap.data() || {};
+  const expireAt = session.expireAt?.toDate ? session.expireAt.toDate() : null;
+  if (expireAt && expireAt.getTime() < Date.now()) {
+    log(`Pair session expired for ${pairCode}.`);
+    await snap.ref.delete().catch(() => {});
+    return false;
+  }
+
   localStorage.setItem(storageKeys.accessToken, session.accessToken);
   if (session.refreshToken) localStorage.setItem(storageKeys.refreshToken, session.refreshToken);
-  localStorage.setItem(storageKeys.expiresAt, String(session.expiresAt));
+  const tokenExpiresAtMs = session.expiresAt?.toDate
+    ? session.expiresAt.toDate().getTime()
+    : (typeof session.expiresAt === "number" ? session.expiresAt : Date.now() + 3600000);
+  localStorage.setItem(storageKeys.expiresAt, String(tokenExpiresAtMs));
+
+  // One-shot: consume and delete so the credentials don't linger.
+  await snap.ref.delete().catch((error) => log(`Pair session cleanup failed: ${error.message}`));
+
   elements.connectionStatus.textContent = "Signed in via pair";
   log(`Pair token received for ${pairCode}.`, "success");
   stopPairPolling();
@@ -943,21 +961,51 @@ async function handleSpotifyRedirect() {
 }
 
 async function postPairToken(pairCode, accessToken, refreshToken, expiresAt) {
-  const response = await fetch("/__spotify-session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ pairCode, accessToken, refreshToken, expiresAt }),
-  });
-  if (!response.ok) {
-    throw new Error(`Pair token post failed: ${response.status}`);
+  const db = await getFirestoreOrNull();
+  if (!db) {
+    throw new Error("Pair backend not ready. Refresh the page and try again.");
   }
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    // Backend missing — POST hit the SPA fallback and returned HTML.
-    // The token was NOT delivered to the TV; surface that explicitly.
-    throw new Error("Pair backend not reachable. Token was not delivered to your TV.");
+  const fbNs = window.firebase;
+  const TimestampCtor = fbNs?.firestore?.Timestamp;
+  const toTimestamp = (ms) => TimestampCtor ? TimestampCtor.fromDate(new Date(ms)) : new Date(ms);
+  const expireAtMs = Date.now() + PAIR_SESSION_TTL_MS;
+
+  try {
+    await db.collection(PAIR_SESSION_COLLECTION).doc(pairCode).set({
+      accessToken,
+      refreshToken: refreshToken || "",
+      expiresAt: toTimestamp(expiresAt),
+      createdAt: toTimestamp(Date.now()),
+      expireAt: toTimestamp(expireAtMs),
+    });
+  } catch (error) {
+    if (error?.code === "permission-denied") {
+      throw new Error("Pair session write denied. Firestore rules need to allow create on pairSessions.");
+    }
+    if (error?.code === "unavailable" || error?.message?.includes("offline")) {
+      throw new Error("Pair backend not reachable (offline). Check your phone's connection and retry.");
+    }
+    throw new Error(`Pair token delivery failed: ${error?.message || error}`);
   }
   log(`Pair token posted for ${pairCode}.`, "success");
+}
+
+let firestoreReadyPromise = null;
+function getFirestoreOrNull() {
+  if (firestoreReadyPromise) return firestoreReadyPromise;
+  firestoreReadyPromise = (async () => {
+    const start = Date.now();
+    while (!(window.firebase && typeof window.firebase.firestore === "function")) {
+      if (Date.now() - start > 6000) return null;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    try {
+      return window.firebase.firestore();
+    } catch {
+      return null;
+    }
+  })();
+  return firestoreReadyPromise;
 }
 
 async function loadSpotifySdk() {
