@@ -25,6 +25,8 @@ const storageKeys = {
   ambientMode: "spotify-pwa.ambient-mode",
 };
 
+const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
+
 const AMBIENT_MODES = ["room", "screensaver", "visualizer"];
 const AMBIENT_MODE_LABELS = {
   room: "Room Display",
@@ -156,6 +158,11 @@ function init() {
   }
   applyUrlState();
 
+  if (document.body.classList.contains("is-phone-pair")) {
+    initPhoneOnly();
+    return;
+  }
+
   window.addEventListener("error", (event) => {
     log(`Window error: ${event.message} at ${event.filename}:${event.lineno}`, "error");
   });
@@ -183,22 +190,58 @@ function init() {
   hydrateUiPreferences();
   registerServiceWorker();
   runDeviceChecks();
-  handleSpotifyRedirect().catch((error) => {
-    logError("Spotify redirect failed", error);
-    if (document.body.classList.contains("is-phone-pair")) {
-      renderPhonePairScreen("error", error.message || "Sign-in failed.");
-    }
-  });
+  handleSpotifyRedirect().catch((error) => logError("Spotify redirect failed", error));
   renderPairInfo();
   renderShellState();
   renderNpPill();
   renderAmbient();
   startProgressTimer();
   startBubbleCornerTimer();
-  if (!document.body.classList.contains("is-phone-pair")) {
-    scheduleSpotifyPlayerCreation("app init");
-    focusFirst();
+  scheduleSpotifyPlayerCreation("app init");
+  focusFirst();
+}
+
+function initPhoneOnly() {
+  // Minimal bootstrap for the phone pair flow. The TV-side app stays untouched and
+  // never loads the SDK, never hits Spotify APIs after sign-in, and never registers
+  // the service worker (this is a one-shot auth surface).
+  window.addEventListener("error", (event) => {
+    logError("Phone error", new Error(`${event.message} at ${event.filename}:${event.lineno}`));
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    logError("Phone unhandled rejection", event.reason);
+  });
+  document.addEventListener("click", handleClick);
+
+  if (elements.phonePairScreen) elements.phonePairScreen.hidden = false;
+
+  const params = new URLSearchParams(location.search);
+  const hasCode = params.has("code");
+  const hasError = params.has("error");
+
+  if (hasError) {
+    renderPhonePairScreen("error", `Spotify returned: ${params.get("error")}`);
+  } else if (hasCode) {
+    renderPhonePairScreen("connecting");
+  } else {
+    renderPhonePairScreen("ready");
   }
+
+  handleSpotifyRedirect()
+    .catch((error) => {
+      logError("Spotify redirect failed", error);
+      renderPhonePairScreen("error", error?.message || "Sign-in failed.");
+    })
+    .finally(() => {
+      // Phone never keeps the token — the TV is the only consumer.
+      // Best-effort cleanup so a returning phone visitor doesn't auto-resume as a TV.
+      try {
+        localStorage.removeItem(storageKeys.accessToken);
+        localStorage.removeItem(storageKeys.refreshToken);
+        localStorage.removeItem(storageKeys.expiresAt);
+        localStorage.removeItem(storageKeys.verifier);
+      } catch {}
+    });
 }
 
 function hydrateUiPreferences() {
@@ -1537,15 +1580,23 @@ function spotifyRedirectUri() {
 function applyUrlState() {
   const params = new URLSearchParams(location.search);
   const pairCode = normalizePairCode(params.get("pair"));
-  const isPhonePair = params.get("phone") === "1";
+
+  // Phone mode is sticky for the lifetime of the tab. The OAuth round-trip
+  // drops the ?phone=1 querystring (redirect URI is just origin + path), so we
+  // persist the flag in sessionStorage to survive that redirect.
+  let isPhonePair = false;
+  try {
+    if (params.get("phone") === "1") {
+      sessionStorage.setItem(PHONE_MODE_SESSION_KEY, "1");
+    }
+    isPhonePair = sessionStorage.getItem(PHONE_MODE_SESSION_KEY) === "1";
+  } catch {
+    isPhonePair = params.get("phone") === "1";
+  }
   document.body.classList.toggle("is-phone-pair", isPhonePair);
   if (pairCode) {
     localStorage.setItem(storageKeys.pairCode, pairCode);
     log(`Pair login mode active. Code=${pairCode}`);
-  }
-  if (isPhonePair) {
-    if (elements.phonePairScreen) elements.phonePairScreen.hidden = false;
-    renderPhonePairScreen("ready");
   }
 }
 
@@ -1829,7 +1880,7 @@ function log(message, level = "info") {
       elements.log.firstElementChild?.remove();
     }
   }
-  if (level === "success" || level === "error") {
+  if (level === "error") {
     showToast(message, level);
   }
   sendServerLog({ level, message });
@@ -1846,10 +1897,14 @@ function showToast(message, level) {
   toast.className = `toast ${level}`;
   toast.textContent = message;
   elements.toastStack.append(toast);
+  // Cap visible toasts at 3 — older ones leave on their own.
+  while (elements.toastStack.children.length > 3) {
+    elements.toastStack.firstElementChild?.remove();
+  }
   window.setTimeout(() => {
     toast.classList.add("is-leaving");
-    window.setTimeout(() => toast.remove(), 280);
-  }, level === "error" ? 6500 : 3600);
+    window.setTimeout(() => toast.remove(), 220);
+  }, level === "error" ? 4500 : 3000);
 }
 
 function sendServerLog(payload) {

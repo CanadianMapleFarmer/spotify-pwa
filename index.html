@@ -41,6 +41,12 @@
           <p class="phone-pair__hint">You'll briefly hand off to Spotify, then come back here — no app install needed.</p>
         </div>
 
+        <div class="phone-pair__connecting" id="phonePairConnecting" hidden>
+          <div class="phone-pair__spinner" aria-hidden="true"></div>
+          <h1>Connecting…</h1>
+          <p>Finishing up with Spotify. This usually takes a couple of seconds.</p>
+        </div>
+
         <div class="phone-pair__success" id="phonePairSuccess" hidden>
           <div class="phone-pair__check" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -306,6 +312,6 @@
       </div>
     </aside>
 
-    <script src="/app.js?v=14" type="module"></script>
+    <script src="/app.js?v=15" type="module"></script>
   </body>
 </html>
