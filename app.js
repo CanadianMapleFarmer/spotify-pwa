@@ -95,10 +95,12 @@ const elements = {
   pairUrl: document.querySelector("#pairUrl"),
   deviceStatus: document.querySelector("#deviceStatus"),
   keyStatus: document.querySelector("#keyStatus"),
-  recentShelf: document.querySelector("#recentShelf"),
+  madeForYouShelf: document.querySelector("#madeForYouShelf"),
+  playlistsHomeShelf: document.querySelector("#playlistsHomeShelf"),
   topShelf: document.querySelector("#topShelf"),
-  albumShelf: document.querySelector("#albumShelf"),
-  savedShelf: document.querySelector("#savedShelf"),
+  signedOutHero: document.querySelector("#signedOutHero"),
+  homeShelves: document.querySelector("#homeShelves"),
+  libraryMadeForYouShelf: document.querySelector("#libraryMadeForYouShelf"),
   playlistShelf: document.querySelector("#playlistShelf"),
   libraryAlbumsShelf: document.querySelector("#libraryAlbumsShelf"),
   libraryTracksShelf: document.querySelector("#libraryTracksShelf"),
@@ -160,6 +162,7 @@ const elements = {
 
 const actions = {
   setView,
+  goToSettings,
   runDeviceChecks,
   refreshAll,
   loadLibrary,
@@ -647,59 +650,73 @@ async function refreshAll() {
 
 async function loadHome() {
   requireAccessToken();
+  toggleSignedOutHero(false);
   const results = await Promise.allSettled([
-    spotifyApiJson("/v1/me/player/recently-played?limit=12"),
-    spotifyApiJson("/v1/me/top/tracks?limit=12&time_range=short_term"),
-    spotifyApiJson("/v1/me/albums?limit=12"),
-    spotifyApiJson("/v1/me/tracks?limit=12"),
+    spotifyApiJson("/v1/me/playlists?limit=50"),
+    spotifyApiJson("/v1/me/top/tracks?limit=18&time_range=medium_term"),
   ]);
   // Total failure (every endpoint rejected) signals a transient token/network
   // problem — throw so bootstrapData can retry instead of painting empty shelves.
   if (results.every((result) => result.status === "rejected")) {
     throw results[0].reason || new Error("Home data requests all failed.");
   }
-  const [recent, top, albums, saved] = results;
-  renderShelf(
-    elements.recentShelf,
-    "Recently Played",
-    uniqueTracks((recent.value?.items || []).map((item) => item.track)).slice(0, 12),
-    "track"
-  );
-  renderShelf(elements.topShelf, "Your Top Tracks", top.value?.items || [], "track");
-  renderShelf(
-    elements.albumShelf,
-    "Saved Albums",
-    (albums.value?.items || []).map((item) => item.album),
-    "album"
-  );
-  renderShelf(
-    elements.savedShelf,
-    "Saved Songs",
-    (saved.value?.items || []).map((item) => item.track),
-    "track"
-  );
+  const [playlists, top] = results;
+  const { generated, own } = splitPlaylists(playlists.value?.items || []);
+  // "Made For You" = Spotify-generated mixes (Discover Weekly, Release Radar,
+  // Daylist, Daily Mix, On Repeat). The /recommendations + /browse APIs are
+  // deprecated, so these owner:spotify playlists are the discovery source.
+  renderShelf(elements.madeForYouShelf, "Made For You", generated.slice(0, 18), "playlist", {
+    hideIfEmpty: true,
+  });
+  renderShelf(elements.playlistsHomeShelf, "Your Playlists", own.slice(0, 18), "playlist", {
+    hideIfEmpty: true,
+  });
+  renderShelf(elements.topShelf, "On Repeat For You", top.value?.items || [], "track", {
+    hideIfEmpty: true,
+  });
+}
+
+// Spotify's first-party generated playlists carry owner.id === "spotify".
+function splitPlaylists(items) {
+  const generated = [];
+  const own = [];
+  for (const playlist of (items || []).filter(Boolean)) {
+    const ownerId = (playlist.owner?.id || "").toLowerCase();
+    const ownerName = (playlist.owner?.display_name || "").toLowerCase();
+    if (ownerId === "spotify" || ownerName === "spotify") generated.push(playlist);
+    else own.push(playlist);
+  }
+  return { generated, own };
+}
+
+function goToSettings() {
+  setView("settings");
+}
+
+function toggleSignedOutHero(show) {
+  if (elements.signedOutHero) elements.signedOutHero.hidden = !show;
+  if (elements.homeShelves) elements.homeShelves.hidden = Boolean(show);
 }
 
 const HOME_SHELVES = [
-  ["recentShelf", "Recently Played"],
-  ["topShelf", "Your Top Tracks"],
-  ["albumShelf", "Saved Albums"],
-  ["savedShelf", "Saved Songs"],
+  ["madeForYouShelf", "Made For You"],
+  ["playlistsHomeShelf", "Your Playlists"],
+  ["topShelf", "On Repeat For You"],
 ];
 
 function markShelvesLoading() {
+  toggleSignedOutHero(false);
   for (const [key, title] of HOME_SHELVES) {
     shelfPlaceholder(elements[key], title, "loading", "Loading…");
   }
 }
 
 function markShelvesSignedOut() {
-  for (const [key, title] of HOME_SHELVES) {
-    shelfPlaceholder(elements[key], title, "empty", "Sign in from Settings to load your music.");
-  }
+  toggleSignedOutHero(true);
 }
 
 function markShelvesError(error) {
+  toggleSignedOutHero(false);
   const message = `Couldn't load (${error?.message || "error"}).`;
   for (const [key, title] of HOME_SHELVES) {
     shelfPlaceholder(elements[key], title, "error", message, true);
@@ -730,11 +747,13 @@ function shelfPlaceholder(container, title, kind, message, withRetry) {
 async function loadLibrary() {
   requireAccessToken();
   const [playlists, albums, tracks] = await Promise.all([
-    spotifyApiJson("/v1/me/playlists?limit=24"),
+    spotifyApiJson("/v1/me/playlists?limit=50"),
     spotifyApiJson("/v1/me/albums?limit=24"),
     spotifyApiJson("/v1/me/tracks?limit=24"),
   ]);
-  renderShelf(elements.playlistShelf, "Playlists", playlists.items || [], "playlist");
+  const { generated, own } = splitPlaylists(playlists.items || []);
+  renderShelf(elements.libraryMadeForYouShelf, "Made For You", generated, "playlist", { hideIfEmpty: true });
+  renderShelf(elements.playlistShelf, "Your Playlists", own, "playlist");
   renderShelf(elements.libraryAlbumsShelf, "Albums", (albums.items || []).map((item) => item.album), "album");
   renderShelf(elements.libraryTracksShelf, "Saved Tracks", (tracks.items || []).map((item) => item.track), "track");
 }
@@ -756,16 +775,24 @@ async function loadDevices() {
   }
 }
 
-function renderShelf(container, title, items, type) {
+function renderShelf(container, title, items, type, { hideIfEmpty = false } = {}) {
   if (!container) return;
   container.replaceChildren();
+  const visible = (items || []).filter(Boolean);
+  // Discovery shelves collapse when empty so Home never shows a lonely
+  // "Nothing to show yet" under a heading.
+  if (hideIfEmpty && !visible.length) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
   const heading = document.createElement("h3");
   heading.textContent = title;
   const rail = document.createElement("div");
   rail.className = "rail";
   rail.setAttribute("role", "list");
   rail.setAttribute("aria-label", title);
-  for (const item of items.filter(Boolean)) {
+  for (const item of visible) {
     rail.append(createMediaCard(item, type));
   }
   if (!rail.children.length) {
@@ -2308,15 +2335,6 @@ async function spotifyApiFetch(path, init) {
 
 function getImage(item) {
   return item?.album?.images?.[0]?.url || item?.images?.[0]?.url || "/public/icons/spotify-logo.png";
-}
-
-function uniqueTracks(tracks) {
-  const seen = new Set();
-  return tracks.filter((track) => {
-    if (!track?.id || seen.has(track.id)) return false;
-    seen.add(track.id);
-    return true;
-  });
 }
 
 function emptyState(message) {
