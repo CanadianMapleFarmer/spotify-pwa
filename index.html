@@ -9,8 +9,8 @@
     <link rel="icon" href="/public/icons/spotify-logo.png" type="image/png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
+    <link rel="stylesheet" href="/styles.css?v=20">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -162,16 +162,41 @@
         </div>
       </section>
 
+      <section class="view view-collection" id="view-collection" aria-label="Collection">
+        <div class="collection-backdrop" id="collectionBackdrop" aria-hidden="true"></div>
+        <button class="focusable now-back" data-action="collectionBack" aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 4.5l-7 7.5 7 7.5 1.45-1.36L11.4 12l5.55-6.14z"/></svg>
+          <span>Back</span>
+        </button>
+        <div class="collection-layout">
+          <aside class="collection-head">
+            <div class="collection-art">
+              <img id="collectionArt" alt="">
+            </div>
+            <p class="eyebrow" id="collectionKind">Album</p>
+            <h2 id="collectionTitle">Collection</h2>
+            <p class="collection-meta" id="collectionMeta"></p>
+            <div class="collection-actions">
+              <button class="focusable collection-play" data-action="playCollection">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                <span>Play</span>
+              </button>
+              <button class="focusable collection-shuffle" id="collectionShuffleBtn" data-action="toggleCollectionShuffle" aria-pressed="false" aria-label="Shuffle">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.34l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.2z"/></svg>
+                <span>Shuffle</span>
+                <span class="collection-shuffle__state">Off</span>
+              </button>
+            </div>
+          </aside>
+          <div class="collection-tracks" id="collectionTracks" role="list"></div>
+        </div>
+      </section>
+
       <section class="view ambient-view" id="view-ambient" aria-label="Ambient">
         <div class="ambient-stage" id="ambientStage" data-mode="room">
 
           <div class="ambient-room" id="ambientRoom" aria-hidden="true">
-            <span class="aurora aurora--a"></span>
-            <span class="aurora aurora--b"></span>
-            <span class="aurora aurora--c"></span>
-            <div class="ambient-room__art">
-              <img id="ambientRoomArt" alt="">
-            </div>
+            <span class="ambient-room__scrim"></span>
           </div>
 
           <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-video="off">
@@ -186,6 +211,7 @@
               <div class="np-bubble__meta">
                 <p class="np-bubble__title" id="ambientBubbleTitle">Nothing playing</p>
                 <p class="np-bubble__artist" id="ambientBubbleArtist"></p>
+                <p class="np-bubble__time" id="ambientBubbleTime">0:00 / 0:00</p>
               </div>
             </div>
           </div>
@@ -198,9 +224,12 @@
           </div>
 
           <div class="ambient-content">
-            <p class="eyebrow" id="ambientModeLabel">Room Display</p>
+            <div class="ambient-now" aria-hidden="true">
+              <img id="ambientRoomArt" alt="">
+            </div>
+            <p class="eyebrow" id="ambientModeLabel">Room</p>
             <h2 id="ambientTitle">Nothing playing</h2>
-            <p id="ambientSubtitle">Start playback and this screen becomes the room display.</p>
+            <p id="ambientSubtitle">Start playback to fill the room.</p>
             <div class="ambient-progress" aria-hidden="true">
               <span class="ambient-progress__track"><span class="ambient-progress__fill" id="ambientProgressFill"></span></span>
               <span class="ambient-progress__time" id="ambientProgressTime">0:00 / 0:00</span>
@@ -328,6 +357,7 @@
           <span class="np-pill__progress" aria-hidden="true">
             <span class="np-pill__progress-fill" id="npPillProgressFill"></span>
           </span>
+          <span class="np-pill__time" id="npPillTime" aria-hidden="true">0:00 / 0:00</span>
         </span>
         <span class="np-pill__expand" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 14l5-5 5 5z" transform="rotate(180 12 12)"/></svg>
@@ -352,6 +382,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
-    <script src="/app.js?v=18" type="module"></script>
+    <script src="/app.js?v=20" type="module"></script>
   </body>
 </html>

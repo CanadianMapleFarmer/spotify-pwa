@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --font-display: "Fraunces", Georgia, "Times New Roman", "Hoefler Text", ui-serif, serif;
+  --font-display: "Geist", "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-body: "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-family: var(--font-body);
@@ -558,101 +558,60 @@ body.debug-on .status-strip {
   opacity: 1;
 }
 
-/* === Room mode === */
+/* === Room mode: blurred album backdrop + dark scrim, clean centered card === */
 .ambient-room {
-  display: grid;
-  place-items: center;
+  background: #06080e;
+}
+
+.ambient-room::before {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  background-image: var(--ambient-art-url);
+  background-size: cover;
+  background-position: center;
+  filter: blur(64px) saturate(1.3) brightness(0.62);
+  transform: scale(1.12);
+}
+
+.ambient-room__scrim {
+  position: absolute;
+  inset: 0;
   background:
-    radial-gradient(circle at 18% 22%, color-mix(in oklab, var(--ambient-accent-a) 32%, transparent) 0%, transparent 38%),
-    radial-gradient(circle at 82% 78%, color-mix(in oklab, var(--ambient-accent-b) 28%, transparent) 0%, transparent 42%),
-    radial-gradient(circle at 50% 110%, color-mix(in oklab, var(--ambient-accent-c) 18%, transparent) 0%, transparent 48%),
+    radial-gradient(circle at 50% 38%, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.5) 64%, rgba(0, 0, 0, 0.82));
+}
+
+.ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room::before {
+  display: none;
+}
+
+.ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room {
+  background:
+    radial-gradient(circle at 30% 24%, color-mix(in oklab, var(--ambient-accent-a) 28%, transparent), transparent 46%),
+    radial-gradient(circle at 74% 78%, color-mix(in oklab, var(--ambient-accent-b) 24%, transparent), transparent 48%),
     #06080e;
 }
 
-.aurora {
-  position: absolute;
-  width: 62vw;
-  height: 62vw;
-  max-width: 1100px;
-  max-height: 1100px;
-  border-radius: 50%;
-  filter: blur(120px) saturate(1.4);
-  opacity: 0.78;
-  mix-blend-mode: screen;
-  will-change: transform;
-}
-
-.aurora--a {
-  top: -16vw;
-  left: -10vw;
-  background: var(--ambient-accent-a);
-  animation: aurora-drift-a 64s ease-in-out infinite alternate;
-}
-
-.aurora--b {
-  bottom: -18vw;
-  right: -12vw;
-  background: var(--ambient-accent-b);
-  animation: aurora-drift-b 78s ease-in-out infinite alternate;
-}
-
-.aurora--c {
-  top: 38%;
-  left: 56%;
-  width: 44vw;
-  height: 44vw;
-  background: var(--ambient-accent-c);
-  opacity: 0.55;
-  animation: aurora-drift-c 92s ease-in-out infinite alternate;
-}
-
-@keyframes aurora-drift-a {
-  0%   { transform: translate3d(0, 0, 0) scale(1); }
-  100% { transform: translate3d(8vw, 6vw, 0) scale(1.12); }
-}
-
-@keyframes aurora-drift-b {
-  0%   { transform: translate3d(0, 0, 0) scale(1.05); }
-  100% { transform: translate3d(-7vw, -5vw, 0) scale(0.92); }
-}
-
-@keyframes aurora-drift-c {
-  0%   { transform: translate3d(-4vw, 0, 0) scale(0.95); }
-  100% { transform: translate3d(4vw, -3vw, 0) scale(1.1); }
-}
-
-.ambient-room__art {
-  position: relative;
-  z-index: 2;
-  width: min(48vw, 720px);
+.ambient-now {
+  width: min(34vw, 400px);
   aspect-ratio: 1;
-  border-radius: 12px;
+  border-radius: 16px;
   overflow: hidden;
+  background: linear-gradient(135deg, #1a2231, #0c111b);
   box-shadow:
-    0 60px 160px rgba(0, 0, 0, 0.6),
+    0 44px 120px rgba(0, 0, 0, 0.62),
     0 0 0 1px rgba(255, 255, 255, 0.06) inset;
-  animation: ken-burns 28s ease-in-out infinite alternate;
 }
 
-.ambient-room__art img {
+.ambient-now img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room__art {
-  background: linear-gradient(135deg, #1a2231, #0c111b);
-  animation: none;
-}
-
-.ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room__art img {
+.ambient-stage:not(.has-artwork) .ambient-now img {
   opacity: 0;
-}
-
-@keyframes ken-burns {
-  0%   { transform: scale(1) translate3d(0, 0, 0); }
-  100% { transform: scale(1.05) translate3d(-1.4%, -1%, 0); }
 }
 
 /* === Screensaver mode === */
@@ -776,6 +735,14 @@ body.debug-on .status-strip {
   max-width: 280px;
 }
 
+.np-bubble__time {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: color-mix(in oklab, var(--ambient-accent-a) 55%, white);
+  font-variant-numeric: tabular-nums;
+}
+
 /* === Visualizer mode === */
 .ambient-visualizer {
   background:
@@ -829,16 +796,20 @@ body.debug-on .status-strip {
   display: none;
 }
 
-/* === Content overlay (room + screensaver) === */
+/* === Content overlay (room only) — clean centered card mirroring Now Playing === */
 .ambient-content {
   position: absolute;
-  left: 56px;
-  right: 56px;
-  bottom: 140px;
+  inset: 0;
   z-index: 5;
-  max-width: min(1080px, calc(100% - 112px));
-  font-family: Georgia, "Times New Roman", "Hoefler Text", ui-serif, serif;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 6vh 56px 17vh;
+  text-align: center;
+  font-family: var(--font-display);
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
 }
 
 .ambient-stage[data-mode="screensaver"] .ambient-content {
@@ -846,42 +817,45 @@ body.debug-on .status-strip {
 }
 
 .ambient-content .eyebrow {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: color-mix(in oklab, var(--ambient-accent-a) 70%, white);
+  font-family: var(--font-display);
+  letter-spacing: 0.32em;
+  color: color-mix(in oklab, var(--ambient-accent-a) 64%, white);
 }
 
 .ambient-content h2 {
-  margin-bottom: 16px;
-  font-size: clamp(3.6rem, 7.4vw, 9.5rem);
+  margin: 0;
+  font-size: clamp(2.4rem, 4.6vw, 4.4rem);
   font-weight: 700;
-  line-height: 0.96;
-  letter-spacing: -0.01em;
+  line-height: 1.02;
+  letter-spacing: -0.015em;
   text-wrap: balance;
+  max-width: 18ch;
 }
 
 .ambient-content p:not(.eyebrow) {
-  color: #e1e7f0;
-  font-size: clamp(1.4rem, 2.3vw, 2.4rem);
-  font-weight: 500;
-  font-style: italic;
+  margin: 0;
+  color: #d9e0ea;
+  font-family: var(--font-body);
+  font-size: clamp(1.1rem, 1.8vw, 1.7rem);
+  font-weight: 600;
 }
 
 .ambient-progress {
   display: flex;
   align-items: center;
-  gap: 18px;
-  margin-top: 26px;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  gap: 16px;
+  margin-top: 8px;
+  width: min(520px, 80%);
+  font-family: var(--font-body);
   font-style: normal;
 }
 
 .ambient-progress__track {
   position: relative;
   flex: 1;
-  max-width: 640px;
-  height: 4px;
+  height: 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.18);
   overflow: visible;
 }
 
@@ -1174,6 +1148,38 @@ body.has-pill .app {
   height: 100%;
   background: var(--green);
   transition: width 800ms linear;
+}
+
+.np-pill__time {
+  display: block;
+  margin: 5px 0 0;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Make it unmistakable when the remote lands on the pill: it lifts, glows, and
+   the chevron flips to an accent so the user knows Enter opens Now Playing. */
+.np-pill__open:focus-visible,
+.np-pill__open:focus {
+  outline: none;
+  border-color: var(--green);
+  background: rgba(30, 215, 96, 0.12);
+}
+
+.np-pill:focus-within {
+  transform: translateX(-50%) translateY(-4px);
+  box-shadow:
+    0 34px 90px rgba(0, 0, 0, 0.66),
+    0 0 0 2px var(--green);
+}
+
+.np-pill__open:focus .np-pill__expand {
+  transform: translateY(2px);
+  color: #07100a;
+  background: var(--green);
 }
 
 .np-pill__controls {
@@ -1858,6 +1864,299 @@ body.is-phone-pair {
 @keyframes now-rise {
   from { opacity: 0; transform: translateY(26px); }
   to   { opacity: 1; transform: none; }
+}
+
+/* === Collection detail (album / playlist) === */
+.view-collection {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100vh;
+  padding: clamp(28px, 4vw, 80px);
+  animation: now-enter 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.collection-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  background-color: #06080d;
+  transform: scale(1.1);
+}
+
+.collection-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 8, 13, 0.82);
+  backdrop-filter: blur(60px) saturate(1.3);
+  -webkit-backdrop-filter: blur(60px) saturate(1.3);
+}
+
+.collection-layout {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(300px, 0.62fr) 1fr;
+  gap: clamp(28px, 4vw, 64px);
+  width: min(1840px, 100%);
+  animation: now-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.collection-head {
+  position: sticky;
+  top: clamp(28px, 4vw, 80px);
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.collection-art {
+  width: 100%;
+  max-width: 420px;
+}
+
+.collection-art img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #111824;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+}
+
+.collection-head .eyebrow {
+  margin: 8px 0 0;
+}
+
+.collection-head h2 {
+  margin-bottom: 4px;
+  font-size: clamp(2.2rem, 3.4vw, 4rem);
+}
+
+.collection-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.collection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.collection-play,
+.collection-shuffle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 14px 28px;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.collection-play svg,
+.collection-shuffle svg {
+  width: 22px;
+  height: 22px;
+}
+
+.collection-play {
+  border: none;
+  background: var(--green);
+  color: #07120a;
+}
+
+.collection-shuffle {
+  border: 2px solid var(--line);
+  background: rgba(12, 16, 24, 0.6);
+  color: #f6f8fb;
+}
+
+.collection-shuffle.is-active {
+  border-color: var(--green);
+  background: rgba(30, 215, 96, 0.16);
+  color: #c8f7d8;
+}
+
+.collection-shuffle__state {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.collection-tracks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.collection-track {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 18px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #f6f8fb;
+  text-align: left;
+}
+
+.collection-track:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.collection-track__index {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 24px;
+}
+
+.collection-track__num {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.collection-track__eq {
+  display: none;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+}
+
+.collection-track__eq i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--green);
+  transform-origin: bottom;
+  animation: collection-eq 900ms ease-in-out infinite;
+}
+
+.collection-track__eq i:nth-child(2) { animation-delay: 220ms; }
+.collection-track__eq i:nth-child(3) { animation-delay: 440ms; }
+
+@keyframes collection-eq {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1); }
+}
+
+.collection-track__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.collection-track__title {
+  overflow: hidden;
+  font-size: 1.06rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.collection-track__artist {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.collection-track__time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+}
+
+.collection-track.is-playing {
+  border-color: rgba(30, 215, 96, 0.5);
+  background: rgba(30, 215, 96, 0.1);
+}
+
+.collection-track.is-playing .collection-track__title {
+  color: var(--green);
+}
+
+.collection-track.is-playing .collection-track__num {
+  display: none;
+}
+
+.collection-track.is-playing .collection-track__eq {
+  display: flex;
+}
+
+.collection-track.is-paused .collection-track__eq i {
+  animation-play-state: paused;
+}
+
+.collection-note {
+  margin: 0;
+  padding: 20px 4px;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+}
+
+.collection-note--error {
+  color: var(--warn);
+}
+
+/* === Shelf placeholder cards (loading / empty / error) === */
+.card--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 1.02rem;
+  font-weight: 600;
+  text-align: center;
+  cursor: default;
+}
+
+.card--loading {
+  animation: card-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes card-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.card--error {
+  border-color: rgba(255, 202, 104, 0.4);
+  color: var(--warn);
+}
+
+.card--retry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 160px;
+  border-color: var(--green);
+  color: var(--green);
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 /* === Settings: Playback & Devices === */

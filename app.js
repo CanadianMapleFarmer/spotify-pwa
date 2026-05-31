@@ -57,6 +57,7 @@ const state = {
   spotifyVolume: 0.7,
   pairPollTimer: 0,
   currentView: "home",
+  previousView: "home",
   ambientMode: "room",
   nowPlaying: null,
   shuffle: false,
@@ -71,6 +72,11 @@ const state = {
   pillDimTimer: 0,
   visualizerRaf: 0,
   visualizerPhase: 0,
+  collection: null,
+  collectionShuffle: false,
+  collectionReturnView: "home",
+  dataLoaded: false,
+  dataLoading: false,
 };
 
 const elements = {
@@ -127,12 +133,21 @@ const elements = {
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
   toastStack: document.querySelector("#toastStack"),
+  ambientBubbleTime: document.querySelector("#ambientBubbleTime"),
   npPill: document.querySelector("#npPill"),
   npPillArt: document.querySelector("#npPillArt"),
   npPillTitle: document.querySelector("#npPillTitle"),
   npPillArtist: document.querySelector("#npPillArtist"),
   npPillProgressFill: document.querySelector("#npPillProgressFill"),
+  npPillTime: document.querySelector("#npPillTime"),
   npPillPlayBtn: document.querySelector("#npPillPlayBtn"),
+  collectionBackdrop: document.querySelector("#collectionBackdrop"),
+  collectionArt: document.querySelector("#collectionArt"),
+  collectionKind: document.querySelector("#collectionKind"),
+  collectionTitle: document.querySelector("#collectionTitle"),
+  collectionMeta: document.querySelector("#collectionMeta"),
+  collectionShuffleBtn: document.querySelector("#collectionShuffleBtn"),
+  collectionTracks: document.querySelector("#collectionTracks"),
   diagnostics: document.querySelector("#diagnostics"),
   toggleDebugView: document.querySelector("#toggleDebugView"),
   toggleDebugState: document.querySelector("#toggleDebugState"),
@@ -150,6 +165,9 @@ const actions = {
   loadLibrary,
   loadDevices,
   setAmbientMode,
+  playCollection,
+  toggleCollectionShuffle,
+  collectionBack,
   clearKeys,
   testStorage,
   testAudio,
@@ -212,7 +230,6 @@ function init() {
   hydrateUiPreferences();
   registerServiceWorker();
   runDeviceChecks();
-  handleSpotifyRedirect().catch((error) => logError("Spotify redirect failed", error));
   renderPairInfo();
   renderShellState();
   renderNpPill();
@@ -222,6 +239,48 @@ function init() {
   startBubbleCornerTimer();
   scheduleSpotifyPlayerCreation("app init");
   focusFirst();
+
+  // Resolve the OAuth/pair redirect first (it loads data itself when a code is
+  // present), then make sure a cold reload with an existing session still pulls
+  // data through instead of getting stuck on the empty skeleton.
+  handleSpotifyRedirect()
+    .catch((error) => logError("Spotify redirect failed", error))
+    .finally(() => {
+      bootstrapData("app init").catch((error) => logError("Initial data load failed", error));
+    });
+}
+
+async function bootstrapData(reason) {
+  if (state.dataLoading || state.dataLoaded) return;
+  const signedIn = Boolean(getStoredAccessToken() || localStorage.getItem(storageKeys.refreshToken));
+  if (!signedIn) {
+    markShelvesSignedOut();
+    return;
+  }
+  state.dataLoading = true;
+  markShelvesLoading();
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await ensureAccessToken();
+      await loadHome();
+      // Library/devices/playback are best-effort; never block the home render.
+      loadLibrary().catch((error) => logError("Library load failed", error));
+      loadDevices().catch(() => {});
+      getCurrentPlayback().catch((error) => logError("Playback sync failed", error));
+      state.dataLoaded = true;
+      state.dataLoading = false;
+      log(`Initial data loaded (${reason}).`, "success");
+      return;
+    } catch (error) {
+      lastError = error;
+      logError(`Data load attempt ${attempt}/3 failed`, error);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 700));
+    }
+  }
+  state.dataLoading = false;
+  markShelvesError(lastError);
+  showToast(`Couldn't load your music: ${lastError?.message || "unknown error"}. Try Refresh.`, "error");
 }
 
 function initPhoneOnly() {
@@ -385,32 +444,32 @@ function moveFocusDirectional(direction) {
   }
 
   const source = getElementCenter(active);
+  const horizontal = direction === "left" || direction === "right";
+  // Heavily penalize off-axis distance so pressing "down" stays in the same column
+  // and "right" stays on the same row. This is what stops the focus from veering
+  // sideways when the user expected it to move straight.
+  const offAxisWeight = horizontal ? 2.6 : 3.4;
+
   const candidates = focusables
     .filter((element) => element !== active)
     .map((element) => {
       const target = getElementCenter(element);
       const dx = target.x - source.x;
       const dy = target.y - source.y;
-      const inDirection =
-        (direction === "right" && dx > 12 && Math.abs(dx) >= Math.abs(dy) * 0.45) ||
-        (direction === "left" && dx < -12 && Math.abs(dx) >= Math.abs(dy) * 0.45) ||
-        (direction === "down" && dy > 12 && Math.abs(dy) >= Math.abs(dx) * 0.35) ||
-        (direction === "up" && dy < -12 && Math.abs(dy) >= Math.abs(dx) * 0.35);
-      if (!inDirection) return null;
-      const primary = direction === "left" || direction === "right" ? Math.abs(dx) : Math.abs(dy);
-      const secondary = direction === "left" || direction === "right" ? Math.abs(dy) : Math.abs(dx);
-      return { element, score: primary + secondary * 2.2 };
+      const forward =
+        direction === "right" ? dx : direction === "left" ? -dx : direction === "down" ? dy : -dy;
+      // Must actually lie ahead in the requested direction.
+      if (forward <= 8) return null;
+      const offAxis = horizontal ? Math.abs(dy) : Math.abs(dx);
+      return { element, score: forward + offAxis * offAxisWeight };
     })
     .filter(Boolean)
     .sort((a, b) => a.score - b.score);
 
+  // If nothing lies ahead, stay put rather than jumping somewhere by DOM order.
   if (candidates.length) {
     focusElement(candidates[0].element);
-    return;
   }
-
-  if (direction === "down" || direction === "right") moveFocus(1);
-  if (direction === "up" || direction === "left") moveFocus(-1);
 }
 
 function handleRemoteEvent(event) {
@@ -446,8 +505,7 @@ function handleRemoteEvent(event) {
       break;
     case "Back":
       event.preventDefault();
-      setView("home");
-      log("Back key observed. Returned to Home.");
+      handleBack();
       break;
     case "MediaPlayPause":
       event.preventDefault();
@@ -582,18 +640,25 @@ function runDeviceChecks() {
 
 async function refreshAll() {
   requireAccessToken();
-  await Promise.allSettled([loadHome(), loadLibrary(), loadDevices(), getCurrentPlayback()]);
+  state.dataLoaded = false;
+  await bootstrapData("manual refresh");
   log("Spotify app data refreshed.", "success");
 }
 
 async function loadHome() {
   requireAccessToken();
-  const [recent, top, albums, saved] = await Promise.allSettled([
+  const results = await Promise.allSettled([
     spotifyApiJson("/v1/me/player/recently-played?limit=12"),
     spotifyApiJson("/v1/me/top/tracks?limit=12&time_range=short_term"),
     spotifyApiJson("/v1/me/albums?limit=12"),
     spotifyApiJson("/v1/me/tracks?limit=12"),
   ]);
+  // Total failure (every endpoint rejected) signals a transient token/network
+  // problem — throw so bootstrapData can retry instead of painting empty shelves.
+  if (results.every((result) => result.status === "rejected")) {
+    throw results[0].reason || new Error("Home data requests all failed.");
+  }
+  const [recent, top, albums, saved] = results;
   renderShelf(
     elements.recentShelf,
     "Recently Played",
@@ -613,6 +678,53 @@ async function loadHome() {
     (saved.value?.items || []).map((item) => item.track),
     "track"
   );
+}
+
+const HOME_SHELVES = [
+  ["recentShelf", "Recently Played"],
+  ["topShelf", "Your Top Tracks"],
+  ["albumShelf", "Saved Albums"],
+  ["savedShelf", "Saved Songs"],
+];
+
+function markShelvesLoading() {
+  for (const [key, title] of HOME_SHELVES) {
+    shelfPlaceholder(elements[key], title, "loading", "Loading…");
+  }
+}
+
+function markShelvesSignedOut() {
+  for (const [key, title] of HOME_SHELVES) {
+    shelfPlaceholder(elements[key], title, "empty", "Sign in from Settings to load your music.");
+  }
+}
+
+function markShelvesError(error) {
+  const message = `Couldn't load (${error?.message || "error"}).`;
+  for (const [key, title] of HOME_SHELVES) {
+    shelfPlaceholder(elements[key], title, "error", message, true);
+  }
+}
+
+function shelfPlaceholder(container, title, kind, message, withRetry) {
+  if (!container) return;
+  container.replaceChildren();
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  const rail = document.createElement("div");
+  rail.className = "rail";
+  const note = document.createElement("div");
+  note.className = `card card--placeholder card--${kind}`;
+  note.textContent = message;
+  rail.append(note);
+  if (withRetry) {
+    const retry = document.createElement("button");
+    retry.className = "focusable card card--retry";
+    retry.dataset.action = "refreshAll";
+    retry.textContent = "Retry";
+    rail.append(retry);
+  }
+  container.append(heading, rail);
 }
 
 async function loadLibrary() {
@@ -677,7 +789,13 @@ function createMediaCard(item, type) {
     <span class="card-title">${escapeHtml(item.name || "Untitled")}</span>
     <span class="card-subtitle">${escapeHtml(subtitle || type)}</span>
   `;
-  button.addEventListener("click", () => playItem(item, type));
+  // A single track plays immediately; a collection opens its detail screen so the
+  // user can browse tracks and choose shuffle vs. sequential before playing.
+  if (type === "album" || type === "playlist") {
+    button.addEventListener("click", () => openCollection(item, type));
+  } else {
+    button.addEventListener("click", () => playItem(item, type));
+  }
   return button;
 }
 
@@ -697,6 +815,227 @@ async function playItem(item, type) {
   }
   log(`Requested playback: ${item.name}`, "success");
   await getCurrentPlayback();
+}
+
+async function openCollection(item, type) {
+  requireAccessToken();
+  if (state.currentView !== "collection") {
+    state.collectionReturnView = state.currentView;
+  }
+  const totalKnown = type === "playlist" ? item.tracks?.total : item.total_tracks;
+  state.collection = {
+    type,
+    id: item.id,
+    contextUri: item.uri,
+    title: item.name || "Untitled",
+    image: getImage(item),
+    byline: type === "playlist"
+      ? (item.owner?.display_name ? `By ${item.owner.display_name}` : "Playlist")
+      : (item.artists || []).map((artist) => artist.name).join(", "),
+    totalKnown: Number.isFinite(totalKnown) ? totalKnown : null,
+    tracks: [],
+    loading: true,
+    error: "",
+  };
+  setView("collection");
+  renderCollection();
+  focusElement(elements.collectionShuffleBtn);
+  try {
+    state.collection.tracks = await fetchCollectionTracks(item, type);
+  } catch (error) {
+    state.collection.error = error?.message || "Couldn't load tracks.";
+    logError("Collection load failed", error);
+  } finally {
+    state.collection.loading = false;
+    renderCollection();
+  }
+}
+
+async function fetchCollectionTracks(item, type) {
+  if (type === "album") {
+    const data = await spotifyApiJson(`/v1/albums/${item.id}/tracks?limit=50`);
+    return (data?.items || []).map((track) => normalizeCollectionTrack(track));
+  }
+  const data = await spotifyApiJson(`/v1/playlists/${item.id}/tracks?limit=50`);
+  return (data?.items || [])
+    .map((entry) => entry.track)
+    .filter((track) => track && track.uri)
+    .map((track) => normalizeCollectionTrack(track));
+}
+
+function normalizeCollectionTrack(track) {
+  return {
+    uri: track.uri || "",
+    id: track.id || "",
+    name: track.name || "Untitled",
+    artist: (track.artists || []).map((artist) => artist.name).join(", "),
+    duration: track.duration_ms || 0,
+  };
+}
+
+function renderCollection() {
+  const coll = state.collection;
+  if (!coll || !elements.collectionTracks) return;
+
+  if (elements.collectionBackdrop) {
+    elements.collectionBackdrop.style.backgroundImage = coll.image ? `url("${coll.image}")` : "";
+  }
+  if (elements.collectionArt) {
+    if (coll.image) elements.collectionArt.src = coll.image;
+    else elements.collectionArt.removeAttribute("src");
+  }
+  if (elements.collectionKind) {
+    elements.collectionKind.textContent = coll.type === "playlist" ? "Playlist" : "Album";
+  }
+  if (elements.collectionTitle) elements.collectionTitle.textContent = coll.title;
+  if (elements.collectionMeta) {
+    const count = coll.tracks.length || coll.totalKnown || 0;
+    const countText = count ? `${count} song${count === 1 ? "" : "s"}` : "";
+    elements.collectionMeta.textContent = [coll.byline, countText].filter(Boolean).join(" · ");
+  }
+  updateCollectionShuffleBtn();
+
+  const list = elements.collectionTracks;
+  list.replaceChildren();
+
+  if (coll.loading) {
+    const note = document.createElement("p");
+    note.className = "collection-note";
+    note.textContent = "Loading tracks…";
+    list.append(note);
+    return;
+  }
+  if (coll.error) {
+    const note = document.createElement("p");
+    note.className = "collection-note collection-note--error";
+    note.textContent = coll.error;
+    list.append(note);
+    return;
+  }
+  if (!coll.tracks.length) {
+    const note = document.createElement("p");
+    note.className = "collection-note";
+    note.textContent = "No tracks here.";
+    list.append(note);
+    return;
+  }
+
+  coll.tracks.forEach((track, index) => {
+    const row = document.createElement("button");
+    row.className = "focusable collection-track";
+    row.dataset.uri = track.uri;
+    row.innerHTML = `
+      <span class="collection-track__index">
+        <span class="collection-track__num">${index + 1}</span>
+        <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+      </span>
+      <span class="collection-track__body">
+        <span class="collection-track__title">${escapeHtml(track.name)}</span>
+        <span class="collection-track__artist">${escapeHtml(track.artist)}</span>
+      </span>
+      <span class="collection-track__time">${formatDuration(track.duration)}</span>
+    `;
+    row.addEventListener("click", () => {
+      startCollectionPlayback({ offsetUri: track.uri }).catch((error) =>
+        logError("Collection track play failed", error)
+      );
+    });
+    list.append(row);
+  });
+  renderCollectionPlayingState();
+}
+
+function renderCollectionPlayingState() {
+  if (!elements.collectionTracks) return;
+  const now = state.nowPlaying;
+  const rows = elements.collectionTracks.querySelectorAll(".collection-track");
+  rows.forEach((row) => {
+    const match = Boolean(now) && now.uri && row.dataset.uri === now.uri;
+    row.classList.toggle("is-playing", match);
+    row.classList.toggle("is-paused", match && Boolean(now?.paused));
+  });
+}
+
+function updateCollectionShuffleBtn() {
+  const btn = elements.collectionShuffleBtn;
+  if (!btn) return;
+  btn.classList.toggle("is-active", state.collectionShuffle);
+  btn.setAttribute("aria-pressed", state.collectionShuffle ? "true" : "false");
+  const label = btn.querySelector(".collection-shuffle__state");
+  if (label) label.textContent = state.collectionShuffle ? "On" : "Off";
+}
+
+function toggleCollectionShuffle() {
+  state.collectionShuffle = !state.collectionShuffle;
+  updateCollectionShuffleBtn();
+  log(`Collection shuffle ${state.collectionShuffle ? "on" : "off"}.`);
+}
+
+function playCollection() {
+  return startCollectionPlayback({});
+}
+
+async function startCollectionPlayback({ offsetUri } = {}) {
+  const coll = state.collection;
+  if (!coll?.contextUri) {
+    showToast("Nothing to play here.", "error");
+    return;
+  }
+  requireAccessToken();
+  await ensureSpotifyDeviceReady();
+
+  const body = { context_uri: coll.contextUri };
+  if (offsetUri) body.offset = { uri: offsetUri };
+  const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/play"), {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`Spotify play failed (${response.status}): ${await readSpotifyError(response)}`);
+  }
+
+  // Apply the collection's shuffle choice after the device is active. When shuffling
+  // the whole collection (no specific track), skip once so it doesn't always open on
+  // track 1.
+  try {
+    await setShuffleState(state.collectionShuffle);
+    if (state.collectionShuffle && !offsetUri) {
+      await spotifyApiFetch(withDeviceIdParam("/v1/me/player/next"), { method: "POST" });
+    }
+  } catch (error) {
+    logError("Applying shuffle after collection play failed", error);
+  }
+
+  log(`Playing ${coll.title}${offsetUri ? " from selected track" : ""} (shuffle ${state.collectionShuffle ? "on" : "off"}).`, "success");
+  window.setTimeout(() => getCurrentPlayback().catch((error) => logError("Playback refresh failed", error)), 700);
+}
+
+async function setShuffleState(value) {
+  const response = await spotifyApiFetch(withDeviceIdParam(`/v1/me/player/shuffle?state=${value}`), { method: "PUT" });
+  if (response.ok) {
+    state.shuffle = value;
+    renderTransportState();
+  }
+}
+
+function collectionBack() {
+  setView(state.collectionReturnView || "home");
+}
+
+function handleBack() {
+  if (state.currentView === "collection") {
+    collectionBack();
+    log("Back: returned to collection source.");
+    return;
+  }
+  if (state.currentView === "now" || state.currentView === "ambient") {
+    const target = state.previousView && state.previousView !== state.currentView ? state.previousView : "home";
+    setView(target);
+    log(`Back: returned to ${target}.`);
+    return;
+  }
+  setView("home");
+  log("Back key observed. Returned to Home.");
 }
 
 function withDeviceIdParam(path) {
@@ -740,6 +1079,9 @@ function setView(viewOrEvent) {
     ? viewOrEvent
     : viewOrEvent?.currentTarget?.dataset?.view || viewOrEvent?.target?.dataset?.view;
   const nextView = view || "home";
+  if (nextView !== state.currentView) {
+    state.previousView = state.currentView;
+  }
   state.currentView = nextView;
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("is-visible", section.id === `view-${nextView}`);
@@ -1339,6 +1681,8 @@ function updateNowPlayingFromSdk(playerState) {
   if (!track) return;
   const duration = track.duration_ms || 0;
   state.nowPlaying = {
+    id: track.id || "",
+    uri: track.uri || "",
     title: track.name,
     artist: (track.artists || []).map((artist) => artist.name).join(", "),
     image: track.album?.images?.[0]?.url || "",
@@ -1358,6 +1702,8 @@ function updateNowPlayingFromWebApi(playback) {
   const item = playback.item;
   if (!item) return;
   state.nowPlaying = {
+    id: item.id || "",
+    uri: item.uri || "",
     title: item.name,
     artist: (item.artists || []).map((artist) => artist.name).join(", "),
     image: item.album?.images?.[0]?.url || "",
@@ -1393,6 +1739,7 @@ function renderNowPlaying() {
   renderTransportState();
   renderAmbient();
   renderNpPill();
+  renderCollectionPlayingState();
 }
 
 const ICON_PLAY = "M8 5v14l11-7z";
@@ -1426,17 +1773,24 @@ function renderProgress() {
   const position = Math.min(elapsed, now.duration || elapsed);
   const ratio = now.duration ? position / now.duration : 0;
   const percent = Math.max(0, Math.min(100, ratio * 100));
+  const timeText = `${formatDuration(position)} / ${formatDuration(now.duration)}`;
   elements.progressFill.style.width = `${percent}%`;
   elements.positionText.textContent = formatDuration(position);
   elements.durationText.textContent = formatDuration(now.duration);
   if (elements.npPillProgressFill) {
     elements.npPillProgressFill.style.width = `${percent}%`;
   }
+  if (elements.npPillTime) {
+    elements.npPillTime.textContent = timeText;
+  }
   if (elements.ambientProgressFill) {
     elements.ambientProgressFill.style.width = `${percent}%`;
   }
   if (elements.ambientProgressTime) {
-    elements.ambientProgressTime.textContent = `${formatDuration(position)} / ${formatDuration(now.duration)}`;
+    elements.ambientProgressTime.textContent = timeText;
+  }
+  if (elements.ambientBubbleTime) {
+    elements.ambientBubbleTime.textContent = timeText;
   }
 }
 
@@ -1699,22 +2053,27 @@ function startVisualizerIfNeeded() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const draw = () => {
+  // TV-optimized: cap to ~30fps and dpr 1 so the canvas work stays cheap on the
+  // VIDAA GPU. Anything higher just dropped frames and lagged the whole UI.
+  const frameInterval = 1000 / 30;
+  let lastFrame = 0;
+  const draw = (ts) => {
     if (state.ambientMode !== "visualizer" || state.currentView !== "ambient") {
       stopVisualizer();
       return;
     }
+    state.visualizerRaf = prefersReduced ? 0 : window.requestAnimationFrame(draw);
+    if (!prefersReduced && ts - lastFrame < frameInterval) return;
+    lastFrame = ts || 0;
     const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    const w = Math.max(1, Math.floor(rect.width * dpr));
-    const h = Math.max(1, Math.floor(rect.height * dpr));
+    const w = Math.max(1, Math.floor(rect.width));
+    const h = Math.max(1, Math.floor(rect.height));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
     state.visualizerPhase += prefersReduced ? 0 : 0.06;
     drawVisualizerFrame(ctx, w, h, state.visualizerPhase, state.paletteCache.palette);
-    state.visualizerRaf = prefersReduced ? 0 : window.requestAnimationFrame(draw);
   };
   state.visualizerRaf = window.requestAnimationFrame(draw);
 }
@@ -1745,11 +2104,13 @@ function drawVisualizerFrame(ctx, w, h, phase, palette) {
   const cy = h / 2;
   const minDim = Math.min(w, h);
   const innerR = minDim * 0.30 * (1 + pulse * 0.035);
-  const bars = 84;
+  // TV-optimized: no shadowBlur, no "lighter" compositing, fewer bars. Those were
+  // the per-frame killers on the VIDAA GPU. The circular look is preserved via the
+  // radial bars + breathing ring, just rendered cheaply.
+  const bars = 56;
 
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.globalCompositeOperation = "lighter";
   ctx.lineCap = "round";
   for (let i = 0; i < bars; i++) {
     const t = i / bars;
@@ -1766,9 +2127,7 @@ function drawVisualizerFrame(ctx, w, h, phase, palette) {
     const y2 = Math.sin(angle) * (innerR + len);
     const color = (Math.sin(t * Math.PI * 2 + phase * 0.2) * 0.5 + 0.5) < 0.5 ? accentA : accentB;
     ctx.strokeStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 18;
-    ctx.globalAlpha = 0.32 + amp * 0.5;
+    ctx.globalAlpha = 0.4 + amp * 0.5;
     ctx.lineWidth = Math.max(2, (minDim / bars) * 0.5);
     ctx.beginPath();
     ctx.moveTo(x1, y1);
@@ -1776,10 +2135,8 @@ function drawVisualizerFrame(ctx, w, h, phase, palette) {
     ctx.stroke();
   }
   // Soft breathing ring just outside the album art.
-  ctx.globalAlpha = 0.12 + pulse * 0.14;
+  ctx.globalAlpha = 0.16 + pulse * 0.16;
   ctx.lineWidth = minDim * 0.012;
-  ctx.shadowColor = accentC;
-  ctx.shadowBlur = 40;
   ctx.strokeStyle = accentC;
   ctx.beginPath();
   ctx.arc(0, 0, innerR * 0.92, 0, Math.PI * 2);
