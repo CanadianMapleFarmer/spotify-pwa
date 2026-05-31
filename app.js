@@ -662,16 +662,16 @@ async function loadHome() {
   }
   const [playlists, top, newReleases] = results;
   const { own } = splitPlaylists(playlists.value?.items || []);
-  // Spotify deprecated /recommendations + /browse/featured-playlists, and this
-  // account follows no owner:spotify mixes, so "New Releases" is the live source
-  // for fresh discovery on Home.
-  renderShelf(elements.newReleasesShelf, "New Releases", newReleases.value?.albums?.items || [], "album", {
-    hideIfEmpty: true,
-  });
   renderShelf(elements.playlistsHomeShelf, "Your Playlists", own.slice(0, 18), "playlist", {
     hideIfEmpty: true,
   });
   renderShelf(elements.topShelf, "On Repeat For You", top.value?.items || [], "track", {
+    hideIfEmpty: true,
+  });
+  // Spotify deprecated /recommendations + /browse/featured-playlists, and this
+  // account follows no owner:spotify mixes, so "New Releases" is the live source
+  // for fresh discovery — kept below the user's familiar shelves.
+  renderShelf(elements.newReleasesShelf, "New Releases", newReleases.value?.albums?.items || [], "album", {
     hideIfEmpty: true,
   });
 }
@@ -697,9 +697,9 @@ function toggleSignedOutHero(show) {
 }
 
 const HOME_SHELVES = [
-  ["newReleasesShelf", "New Releases"],
   ["playlistsHomeShelf", "Your Playlists"],
   ["topShelf", "On Repeat For You"],
+  ["newReleasesShelf", "New Releases"],
 ];
 
 function markShelvesLoading() {
