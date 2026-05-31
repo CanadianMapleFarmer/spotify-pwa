@@ -119,7 +119,6 @@ const elements = {
   ambientSubtitle: document.querySelector("#ambientSubtitle"),
   ambientRoomArt: document.querySelector("#ambientRoomArt"),
   ambientBubble: document.querySelector("#ambientBubble"),
-  ambientBubbleArt: document.querySelector("#ambientBubbleArt"),
   ambientBubbleTitle: document.querySelector("#ambientBubbleTitle"),
   ambientBubbleArtist: document.querySelector("#ambientBubbleArtist"),
   ambientDriftA: document.querySelector("#ambientDriftA"),
@@ -134,7 +133,6 @@ const elements = {
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
   toastStack: document.querySelector("#toastStack"),
-  ambientBubbleTime: document.querySelector("#ambientBubbleTime"),
   npPill: document.querySelector("#npPill"),
   npPillArt: document.querySelector("#npPillArt"),
   npPillTitle: document.querySelector("#npPillTitle"),
@@ -343,10 +341,40 @@ function hydrateUiPreferences() {
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
+  elements.ambientControls?.classList.toggle("is-dim", state.ambientMode === "screensaver");
 }
 
 function focusableElements() {
-  return Array.from(document.querySelectorAll(".focusable:not([disabled])")).filter(isVisibleElement);
+  return activeFocusables();
+}
+
+// Scope the focus pool to the chrome (nav) + the active view + the now-playing pill.
+// This stops "down"/"right" from teleporting into an off-screen view's controls.
+function activeFocusables() {
+  const roots = [];
+  const nav = document.querySelector(".nav");
+  if (nav) roots.push(nav);
+  const activeView = document.getElementById(`view-${state.currentView}`);
+  if (activeView) roots.push(activeView);
+  const pill = document.getElementById("npPill");
+  if (pill) roots.push(pill);
+
+  const seen = new Set();
+  const result = [];
+  for (const root of roots) {
+    const matches = root.matches?.(".focusable:not([disabled])") ? [root] : [];
+    for (const el of matches.concat(Array.from(root.querySelectorAll(".focusable:not([disabled])")))) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (isVisibleElement(el)) result.push(el);
+    }
+  }
+  return result;
+}
+
+// Overlap length of two 1D segments; positive means they share span on that axis.
+function overlap1D(aStart, aEnd, bStart, bEnd) {
+  return Math.min(aEnd, bEnd) - Math.max(aStart, bStart);
 }
 
 function isVisibleElement(element) {
@@ -445,30 +473,37 @@ function moveFocusDirectional(direction) {
     return;
   }
 
-  const source = getElementCenter(active);
+  const a = active.getBoundingClientRect();
   const horizontal = direction === "left" || direction === "right";
-  // Heavily penalize off-axis distance so pressing "down" stays in the same column
-  // and "right" stays on the same row. This is what stops the focus from veering
-  // sideways when the user expected it to move straight.
-  const offAxisWeight = horizontal ? 2.6 : 3.4;
 
   const candidates = focusables
     .filter((element) => element !== active)
     .map((element) => {
-      const target = getElementCenter(element);
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const forward =
-        direction === "right" ? dx : direction === "left" ? -dx : direction === "down" ? dy : -dy;
-      // Must actually lie ahead in the requested direction.
-      if (forward <= 8) return null;
-      const offAxis = horizontal ? Math.abs(dy) : Math.abs(dx);
-      return { element, score: forward + offAxis * offAxisWeight };
+      const r = element.getBoundingClientRect();
+      // "ahead" = edge-to-edge gap in the travel direction; must clear the active box.
+      let ahead;
+      if (direction === "right") ahead = r.left - a.right;
+      else if (direction === "left") ahead = a.left - r.right;
+      else if (direction === "down") ahead = r.top - a.bottom;
+      else ahead = a.top - r.bottom;
+      // Require the candidate to genuinely lie ahead (allow slight overlap of edges).
+      if (ahead < -Math.min(a.width, a.height) * 0.5) return null;
+      const aheadDist = Math.max(0, ahead);
+
+      // Cross-axis overlap: prefer candidates that share span on the perpendicular axis.
+      const overlap = horizontal
+        ? overlap1D(a.top, a.bottom, r.top, r.bottom)
+        : overlap1D(a.left, a.right, r.left, r.right);
+      // Negative overlap means a gap; turn it into a penalty distance.
+      const offAxisGap = overlap > 0 ? 0 : -overlap;
+      // Overlapping candidates win decisively; otherwise fall back to nearest by gap.
+      const score = aheadDist + offAxisGap * 3 + (overlap > 0 ? 0 : 1000);
+      return { element, score, overlap };
     })
     .filter(Boolean)
-    .sort((a, b) => a.score - b.score);
+    .sort((x, y) => x.score - y.score);
 
-  // If nothing lies ahead, stay put rather than jumping somewhere by DOM order.
+  // No-wrap: if nothing lies ahead in this direction, stay put at the edge.
   if (candidates.length) {
     focusElement(candidates[0].element);
   }
@@ -1120,6 +1155,17 @@ function setView(viewOrEvent) {
     stopVisualizer();
   }
   syncAmbientVideo();
+  // Land focus inside the new view so the remote starts somewhere sensible.
+  // Skip Ambient (it owns its own mode-arrow handling) and skip if focus is already there.
+  if (nextView !== "ambient") {
+    const targetView = document.getElementById(`view-${nextView}`);
+    const alreadyInside = targetView && document.activeElement && targetView.contains(document.activeElement);
+    if (!alreadyInside) {
+      const focusables = activeFocusables();
+      const firstInView = focusables.find((el) => targetView?.contains(el)) || focusables[0];
+      if (firstInView) focusElement(firstInView);
+    }
+  }
   log(`View changed to ${nextView}.`);
 }
 
@@ -1137,6 +1183,8 @@ function setAmbientMode(eventOrMode) {
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
+  // Scene mode is meant to be glanceable — fade the controls back until focused.
+  elements.ambientControls?.classList.toggle("is-dim", state.ambientMode === "screensaver");
   if (state.currentView === "ambient") {
     startVisualizerIfNeeded();
   }
@@ -1813,9 +1861,6 @@ function renderProgress() {
   if (elements.ambientProgressTime) {
     elements.ambientProgressTime.textContent = timeText;
   }
-  if (elements.ambientBubbleTime) {
-    elements.ambientBubbleTime.textContent = timeText;
-  }
 }
 
 function renderAmbient() {
@@ -1851,13 +1896,6 @@ function renderAmbient() {
     }
   }
 
-  if (elements.ambientBubbleArt) {
-    if (image) {
-      elements.ambientBubbleArt.src = image;
-    } else {
-      elements.ambientBubbleArt.removeAttribute("src");
-    }
-  }
   if (elements.ambientBubbleTitle) {
     elements.ambientBubbleTitle.textContent = now?.title || "Nothing playing";
   }

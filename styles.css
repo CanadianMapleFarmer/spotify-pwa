@@ -89,6 +89,11 @@ input {
   color: #f6f8fb;
 }
 
+.focusable {
+  /* leave room under the sticky nav / page edges when scrollIntoView lands focus */
+  scroll-margin: 90px 24px;
+}
+
 .focusable:focus,
 .card:focus,
 .device-card:focus,
@@ -578,7 +583,8 @@ body.debug-on .status-strip {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 50% 38%, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.5) 64%, rgba(0, 0, 0, 0.82));
+    linear-gradient(100deg, rgba(0, 0, 0, 0.86) 0%, rgba(0, 0, 0, 0.58) 42%, rgba(0, 0, 0, 0.22) 72%, rgba(0, 0, 0, 0.5) 100%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.55), transparent 38%);
 }
 
 .ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room::before {
@@ -592,25 +598,29 @@ body.debug-on .status-strip {
     #06080e;
 }
 
-.ambient-now {
-  width: min(34vw, 400px);
+.ambient-room-art {
+  margin: 0;
+  flex-shrink: 0;
+  width: 46vh;
+  max-width: 44vw;
   aspect-ratio: 1;
-  border-radius: 16px;
+  border-radius: 20px;
   overflow: hidden;
   background: linear-gradient(135deg, #1a2231, #0c111b);
   box-shadow:
-    0 44px 120px rgba(0, 0, 0, 0.62),
-    0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+    0 54px 140px rgba(0, 0, 0, 0.66),
+    0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  transform: rotate(-1.4deg);
 }
 
-.ambient-now img {
+.ambient-room-art img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.ambient-stage:not(.has-artwork) .ambient-now img {
+.ambient-stage:not(.has-artwork) .ambient-room-art img {
   opacity: 0;
 }
 
@@ -735,12 +745,35 @@ body.debug-on .status-strip {
   max-width: 280px;
 }
 
-.np-bubble__time {
-  margin: 4px 0 0;
-  font-size: 0.8rem;
+/* Scene bubble: text-only, calm, gently breathing */
+.np-bubble--scene {
+  padding: 14px 26px;
+  max-width: 60ch;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(8, 11, 18, 0.5);
+  animation: scene-breath 9s ease-in-out infinite;
+}
+
+.np-bubble--scene .np-bubble__title {
   font-weight: 700;
-  color: color-mix(in oklab, var(--ambient-accent-a) 55%, white);
-  font-variant-numeric: tabular-nums;
+  max-width: 52ch;
+}
+
+.np-bubble--scene .np-bubble__artist {
+  max-width: 52ch;
+}
+
+@keyframes scene-breath {
+  0%, 100% { filter: brightness(0.82); opacity: 0.78; }
+  50%      { filter: brightness(1.06); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .np-bubble--scene {
+    animation: none;
+    filter: none;
+    opacity: 1;
+  }
 }
 
 /* === Visualizer mode === */
@@ -796,20 +829,29 @@ body.debug-on .status-strip {
   display: none;
 }
 
-/* === Content overlay (room only) — clean centered card mirroring Now Playing === */
+/* === Content overlay (room only) — asymmetric gallery wall === */
 .ambient-content {
   position: absolute;
   inset: 0;
   z-index: 5;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 20px;
-  padding: 6vh 56px 17vh;
-  text-align: center;
+  justify-content: flex-start;
+  gap: clamp(36px, 6vw, 88px);
+  padding: 6vh clamp(48px, 7vw, 110px) 16vh;
+  text-align: left;
   font-family: var(--font-display);
   text-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+}
+
+.ambient-room-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  max-width: 46ch;
 }
 
 .ambient-stage[data-mode="screensaver"] .ambient-content {
@@ -817,6 +859,7 @@ body.debug-on .status-strip {
 }
 
 .ambient-content .eyebrow {
+  margin: 0;
   font-family: var(--font-display);
   letter-spacing: 0.32em;
   color: color-mix(in oklab, var(--ambient-accent-a) 64%, white);
@@ -824,12 +867,12 @@ body.debug-on .status-strip {
 
 .ambient-content h2 {
   margin: 0;
-  font-size: clamp(2.4rem, 4.6vw, 4.4rem);
+  font-size: clamp(3rem, 6vw, 6.5rem);
   font-weight: 700;
-  line-height: 1.02;
-  letter-spacing: -0.015em;
+  line-height: 0.98;
+  letter-spacing: -0.02em;
   text-wrap: balance;
-  max-width: 18ch;
+  max-width: 14ch;
 }
 
 .ambient-content p:not(.eyebrow) {
@@ -845,7 +888,7 @@ body.debug-on .status-strip {
   align-items: center;
   gap: 16px;
   margin-top: 8px;
-  width: min(520px, 80%);
+  width: min(560px, 100%);
   font-family: var(--font-body);
   font-style: normal;
 }

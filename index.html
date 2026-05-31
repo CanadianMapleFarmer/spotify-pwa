@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=25">
+    <link rel="stylesheet" href="/styles.css?v=26">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -220,12 +220,10 @@
             <span class="drift drift--b" id="ambientDriftB"></span>
             <span class="drift drift--c" id="ambientDriftC"></span>
             <span class="drift drift--d" id="ambientDriftD"></span>
-            <div class="np-bubble" id="ambientBubble" data-corner="bl">
-              <img id="ambientBubbleArt" alt="">
+            <div class="np-bubble np-bubble--scene" id="ambientBubble" data-corner="bl">
               <div class="np-bubble__meta">
                 <p class="np-bubble__title" id="ambientBubbleTitle">Nothing playing</p>
                 <p class="np-bubble__artist" id="ambientBubbleArtist"></p>
-                <p class="np-bubble__time" id="ambientBubbleTime">0:00 / 0:00</p>
               </div>
             </div>
           </div>
@@ -238,15 +236,17 @@
           </div>
 
           <div class="ambient-content">
-            <div class="ambient-now" aria-hidden="true">
+            <figure class="ambient-room-art" aria-hidden="true">
               <img id="ambientRoomArt" alt="">
-            </div>
-            <p class="eyebrow" id="ambientModeLabel">Room</p>
-            <h2 id="ambientTitle">Nothing playing</h2>
-            <p id="ambientSubtitle">Start playback to fill the room.</p>
-            <div class="ambient-progress" aria-hidden="true">
-              <span class="ambient-progress__track"><span class="ambient-progress__fill" id="ambientProgressFill"></span></span>
-              <span class="ambient-progress__time" id="ambientProgressTime">0:00 / 0:00</span>
+            </figure>
+            <div class="ambient-room-meta">
+              <p class="eyebrow" id="ambientModeLabel">Room</p>
+              <h2 id="ambientTitle">Nothing playing</h2>
+              <p id="ambientSubtitle">Start playback to fill the room.</p>
+              <div class="ambient-progress" aria-hidden="true">
+                <span class="ambient-progress__track"><span class="ambient-progress__fill" id="ambientProgressFill"></span></span>
+                <span class="ambient-progress__time" id="ambientProgressTime">0:00 / 0:00</span>
+              </div>
             </div>
           </div>
 
@@ -396,6 +396,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
-    <script src="/app.js?v=25" type="module"></script>
+    <script src="/app.js?v=26" type="module"></script>
   </body>
 </html>
