@@ -7,11 +7,15 @@
     <title>Spotify TV</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/public/icons/spotify-logo.png" type="image/png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Manrope:wght@500;600;700;800&display=swap">
     <link rel="stylesheet" href="/styles.css">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
     <div class="ambient-bg" id="ambientBg"></div>
+    <div class="grain" aria-hidden="true"></div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
     <section class="phone-pair" id="phonePairScreen" data-state="ready" hidden aria-label="Sign in to pair with your TV">
@@ -77,8 +81,6 @@
         <nav class="nav" aria-label="Primary">
           <button class="focusable nav-item is-active" data-action="setView" data-view="home">Home</button>
           <button class="focusable nav-item" data-action="setView" data-view="library">Library</button>
-          <button class="focusable nav-item" data-action="setView" data-view="now">Now Playing</button>
-          <button class="focusable nav-item" data-action="setView" data-view="devices">Devices</button>
           <button class="focusable nav-item" data-action="setView" data-view="ambient">Ambient</button>
           <button class="focusable nav-item" data-action="setView" data-view="settings">Settings</button>
         </nav>
@@ -117,7 +119,12 @@
         <div class="shelf" id="libraryTracksShelf"></div>
       </section>
 
-      <section class="view" id="view-now" aria-label="Now Playing">
+      <section class="view view-now" id="view-now" aria-label="Now Playing">
+        <div class="now-backdrop" id="nowBackdrop" aria-hidden="true"></div>
+        <button class="focusable now-back" data-action="setView" data-view="home" aria-label="Back to Home">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 4.5l-7 7.5 7 7.5 1.45-1.36L11.4 12l5.55-6.14z"/></svg>
+          <span>Back</span>
+        </button>
         <div class="now-layout">
           <div class="art-frame">
             <img id="nowArtwork" alt="">
@@ -133,27 +140,26 @@
               <span id="positionText">0:00</span>
               <span id="durationText">0:00</span>
             </div>
-            <div class="transport">
-              <button class="focusable" data-action="previousTrack">Prev</button>
-              <button class="focusable primary" data-action="toggleSpotifyPlayback" id="playPauseButton">Play/Pause</button>
-              <button class="focusable" data-action="nextTrack">Next</button>
-              <button class="focusable" data-action="createSpotifyPlayer">Create TV Player</button>
-              <button class="focusable" data-action="transferPlayback">Transfer Here</button>
-              <button class="focusable" data-action="getCurrentPlayback">Update</button>
+            <div class="transport transport--icons">
+              <button class="focusable transport-btn" data-action="toggleShuffle" id="shuffleButton" aria-label="Shuffle" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.34l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.2z"/></svg>
+              </button>
+              <button class="focusable transport-btn" data-action="previousTrack" aria-label="Previous track">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+              </button>
+              <button class="focusable transport-btn transport-btn--primary" data-action="toggleSpotifyPlayback" id="playPauseButton" aria-label="Play or pause">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button class="focusable transport-btn" data-action="nextTrack" aria-label="Next track">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
+              </button>
+              <button class="focusable transport-btn transport-btn--repeat" data-action="cycleRepeat" id="repeatButton" aria-label="Repeat: off">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+                <span class="transport-btn__badge" aria-hidden="true">1</span>
+              </button>
             </div>
           </div>
         </div>
-      </section>
-
-      <section class="view" id="view-devices" aria-label="Devices">
-        <div class="section-title">
-          <div>
-            <p class="eyebrow">Devices</p>
-            <h2>Spotify Connect</h2>
-          </div>
-          <button class="focusable icon-button" data-action="loadDevices">Refresh</button>
-        </div>
-        <div class="device-grid" id="devicesGrid"></div>
       </section>
 
       <section class="view ambient-view" id="view-ambient" aria-label="Ambient">
@@ -168,7 +174,9 @@
             </div>
           </div>
 
-          <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true">
+          <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-video="off">
+            <video class="ambient-video" id="ambientVideo" muted loop playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
+            <span class="ambient-video__scrim" aria-hidden="true"></span>
             <span class="drift drift--a" id="ambientDriftA"></span>
             <span class="drift drift--b" id="ambientDriftB"></span>
             <span class="drift drift--c" id="ambientDriftC"></span>
@@ -200,12 +208,29 @@
           </div>
 
           <div class="ambient-controls" id="ambientControls">
-            <button class="focusable" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
-            <button class="focusable" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Screensaver</button>
-            <button class="focusable" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
-            <button class="focusable" data-action="previousTrack" aria-label="Previous track">Prev</button>
-            <button class="focusable" data-action="toggleSpotifyPlayback" aria-label="Play or pause">Play/Pause</button>
-            <button class="focusable" data-action="nextTrack" aria-label="Next track">Next</button>
+            <div class="ambient-controls__modes">
+              <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
+              <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Scene</button>
+              <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
+            </div>
+            <div class="ambient-controls__transport">
+              <button class="focusable transport-btn" data-action="toggleShuffle" aria-label="Shuffle" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.34l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.2z"/></svg>
+              </button>
+              <button class="focusable transport-btn" data-action="previousTrack" aria-label="Previous track">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+              </button>
+              <button class="focusable transport-btn transport-btn--primary" data-action="toggleSpotifyPlayback" aria-label="Play or pause">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button class="focusable transport-btn" data-action="nextTrack" aria-label="Next track">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
+              </button>
+              <button class="focusable transport-btn transport-btn--repeat" data-action="cycleRepeat" aria-label="Repeat: off">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+                <span class="transport-btn__badge" aria-hidden="true">1</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -214,9 +239,8 @@
         <div class="section-title">
           <div>
             <p class="eyebrow">Settings</p>
-            <h2>Account & Playback</h2>
+            <h2>Account &amp; Playback</h2>
           </div>
-          <button class="focusable icon-button" data-action="createSpotifyPlayer">Create TV Player</button>
         </div>
 
         <div class="auth-panel" id="authPanel">
@@ -244,6 +268,19 @@
               <p class="pair-url" id="pairUrl">Create a pair login to generate a phone URL.</p>
             </div>
           </div>
+        </div>
+
+        <div class="settings-section">
+          <p class="eyebrow">Playback</p>
+          <h3 class="settings-section__title">TV Player &amp; Devices</h3>
+          <p class="settings-section__lede">Create the Spotify Web Playback device on this TV, then move playback here. Pick any Spotify Connect device below to hand off audio.</p>
+          <div class="button-row">
+            <button class="focusable primary" data-action="createSpotifyPlayer">Create TV Player</button>
+            <button class="focusable" data-action="transferPlayback">Transfer Here</button>
+            <button class="focusable subdued" data-action="getCurrentPlayback">Sync State</button>
+            <button class="focusable subdued" data-action="loadDevices">Refresh Devices</button>
+          </div>
+          <div class="device-grid" id="devicesGrid"></div>
         </div>
 
         <div class="settings-section">
@@ -280,17 +317,22 @@
       </section>
     </main>
 
-    <aside id="npPill" class="np-pill" hidden aria-label="Now playing controls">
-      <div class="np-pill__art" aria-hidden="true">
-        <img id="npPillArt" alt="">
-      </div>
-      <div class="np-pill__meta">
-        <p class="np-pill__title" id="npPillTitle">Nothing playing</p>
-        <p class="np-pill__artist" id="npPillArtist"></p>
-        <div class="np-pill__progress" aria-hidden="true">
-          <span class="np-pill__progress-fill" id="npPillProgressFill"></span>
-        </div>
-      </div>
+    <aside id="npPill" class="np-pill" hidden aria-label="Now playing">
+      <button class="focusable np-pill__open" data-action="setView" data-view="now" aria-label="Open Now Playing">
+        <span class="np-pill__art" aria-hidden="true">
+          <img id="npPillArt" alt="">
+        </span>
+        <span class="np-pill__meta">
+          <span class="np-pill__title" id="npPillTitle">Nothing playing</span>
+          <span class="np-pill__artist" id="npPillArtist"></span>
+          <span class="np-pill__progress" aria-hidden="true">
+            <span class="np-pill__progress-fill" id="npPillProgressFill"></span>
+          </span>
+        </span>
+        <span class="np-pill__expand" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 14l5-5 5 5z" transform="rotate(180 12 12)"/></svg>
+        </span>
+      </button>
       <div class="np-pill__controls">
         <button class="focusable np-pill__btn" data-action="previousTrack" aria-label="Previous track">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" fill="currentColor"/></svg>
@@ -301,9 +343,6 @@
         <button class="focusable np-pill__btn" data-action="nextTrack" aria-label="Next track">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" fill="currentColor"/></svg>
         </button>
-        <button class="focusable np-pill__btn" data-action="setView" data-view="now" aria-label="Open Now Playing view">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5z" fill="currentColor" transform="rotate(180 12 12)"/></svg>
-        </button>
       </div>
     </aside>
 
@@ -313,6 +352,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
-    <script src="/app.js?v=17" type="module"></script>
+    <script src="/app.js?v=18" type="module"></script>
   </body>
 </html>

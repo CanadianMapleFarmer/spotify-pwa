@@ -32,10 +32,22 @@ const PAIR_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes — long enough for a 
 const AMBIENT_MODES = ["room", "screensaver", "visualizer"];
 const AMBIENT_MODE_LABELS = {
   room: "Room Display",
-  screensaver: "Screensaver",
+  screensaver: "Scene",
   visualizer: "Visualizer",
 };
 const BUBBLE_CORNERS = ["bl", "br", "tr", "tl"];
+
+// Screensaver scenery, tried in order. Local files (drop your own loops into
+// public/ambient/) win first; the hotlinked city loops are a best-effort
+// fallback. If every source fails, the generative drift scene takes over.
+const AMBIENT_VIDEOS = [
+  "/public/ambient/loop-1.mp4",
+  "/public/ambient/loop-2.mp4",
+  "/public/ambient/loop-3.mp4",
+  "https://assets.mixkit.co/videos/preview/mixkit-aerial-shot-of-a-city-at-night-time-4063-large.mp4",
+  "https://assets.mixkit.co/videos/preview/mixkit-night-traffic-in-the-city-4053-large.mp4",
+  "https://assets.mixkit.co/videos/preview/mixkit-traffic-in-the-city-during-the-night-4055-large.mp4",
+];
 
 const state = {
   focusIndex: 0,
@@ -47,6 +59,9 @@ const state = {
   currentView: "home",
   ambientMode: "room",
   nowPlaying: null,
+  shuffle: false,
+  repeat: "off",
+  videoIndex: -1,
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -83,6 +98,7 @@ const elements = {
   libraryTracksShelf: document.querySelector("#libraryTracksShelf"),
   devicesGrid: document.querySelector("#devicesGrid"),
   nowArtwork: document.querySelector("#nowArtwork"),
+  nowBackdrop: document.querySelector("#nowBackdrop"),
   nowContext: document.querySelector("#nowContext"),
   nowTitle: document.querySelector("#nowTitle"),
   nowArtist: document.querySelector("#nowArtist"),
@@ -105,6 +121,8 @@ const elements = {
   ambientDriftD: document.querySelector("#ambientDriftD"),
   ambientVisualizerCanvas: document.querySelector("#ambientVisualizerCanvas"),
   ambientVisualizerArt: document.querySelector("#ambientVisualizerArt"),
+  ambientScreensaver: document.querySelector("#ambientScreensaver"),
+  ambientVideo: document.querySelector("#ambientVideo"),
   ambientControls: document.querySelector("#ambientControls"),
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
@@ -144,6 +162,8 @@ const actions = {
   transferPlayback,
   getCurrentPlayback,
   toggleSpotifyPlayback,
+  toggleShuffle,
+  cycleRepeat,
   nextTrack,
   previousTrack,
   volumeDown,
@@ -196,6 +216,7 @@ function init() {
   renderPairInfo();
   renderShellState();
   renderNpPill();
+  renderTransportState();
   renderAmbient();
   startProgressTimer();
   startBubbleCornerTimer();
@@ -732,6 +753,7 @@ function setView(viewOrEvent) {
   } else {
     stopVisualizer();
   }
+  syncAmbientVideo();
   log(`View changed to ${nextView}.`);
 }
 
@@ -752,6 +774,7 @@ function setAmbientMode(eventOrMode) {
   if (state.currentView === "ambient") {
     startVisualizerIfNeeded();
   }
+  syncAmbientVideo();
   log(`Ambient mode set to ${state.ambientMode}.`);
 }
 
@@ -1180,6 +1203,29 @@ async function previousTrack() {
   window.setTimeout(() => getCurrentPlayback().catch((error) => logError("Playback refresh failed", error)), 800);
 }
 
+const REPEAT_CYCLE = ["off", "context", "track"];
+
+async function toggleShuffle() {
+  await ensureSpotifyDeviceReady();
+  const next = !state.shuffle;
+  const response = await spotifyApiFetch(withDeviceIdParam(`/v1/me/player/shuffle?state=${next}`), { method: "PUT" });
+  if (!response.ok) throw new Error(`Spotify shuffle failed (${response.status}): ${await readSpotifyError(response)}`);
+  state.shuffle = next;
+  renderTransportState();
+  log(`Spotify shuffle ${next ? "on" : "off"}.`, "success");
+}
+
+async function cycleRepeat() {
+  await ensureSpotifyDeviceReady();
+  const idx = REPEAT_CYCLE.indexOf(state.repeat);
+  const next = REPEAT_CYCLE[(idx + 1) % REPEAT_CYCLE.length];
+  const response = await spotifyApiFetch(withDeviceIdParam(`/v1/me/player/repeat?state=${next}`), { method: "PUT" });
+  if (!response.ok) throw new Error(`Spotify repeat failed (${response.status}): ${await readSpotifyError(response)}`);
+  state.repeat = next;
+  renderTransportState();
+  log(`Spotify repeat ${next}.`, "success");
+}
+
 async function transferPlayback() {
   if (!state.spotifyDeviceId) {
     log("TV device ID missing. Creating Spotify player before transfer.");
@@ -1301,6 +1347,10 @@ function updateNowPlayingFromSdk(playerState) {
     duration,
     updatedAt: Date.now(),
   };
+  if (typeof playerState.shuffle === "boolean") state.shuffle = playerState.shuffle;
+  if (typeof playerState.repeat_mode === "number") {
+    state.repeat = REPEAT_CYCLE[playerState.repeat_mode] || "off";
+  }
   renderNowPlaying();
 }
 
@@ -1316,25 +1366,57 @@ function updateNowPlayingFromWebApi(playback) {
     duration: item.duration_ms || 0,
     updatedAt: Date.now(),
   };
+  if (typeof playback.shuffle_state === "boolean") state.shuffle = playback.shuffle_state;
+  if (typeof playback.repeat_state === "string") state.repeat = playback.repeat_state;
   renderNowPlaying();
 }
 
 function renderNowPlaying() {
   const now = state.nowPlaying;
   if (!now) {
+    renderTransportState();
     renderNpPill();
     return;
   }
-  elements.nowArtwork.src = now.image;
-  elements.nowContext.textContent = now.paused ? "Paused" : "Playing";
+  if (now.image) elements.nowArtwork.src = now.image;
+  else elements.nowArtwork.removeAttribute("src");
+  if (elements.nowBackdrop) {
+    elements.nowBackdrop.style.backgroundImage = now.image ? `url("${now.image}")` : "";
+  }
+  elements.nowContext.textContent = now.paused ? "Paused" : "Now Playing";
   elements.nowTitle.textContent = now.title;
   elements.nowArtist.textContent = now.artist;
   elements.ambientTitle.textContent = now.title;
   elements.ambientSubtitle.textContent = now.artist;
   refreshAmbientPalette(now.image);
   renderProgress();
+  renderTransportState();
   renderAmbient();
   renderNpPill();
+}
+
+const ICON_PLAY = "M8 5v14l11-7z";
+const ICON_PAUSE = "M6 5h4v14H6zm8 0h4v14h-4z";
+
+function renderTransportState() {
+  const now = state.nowPlaying;
+  const isPlaying = now ? !now.paused : false;
+  for (const btn of document.querySelectorAll("[data-action='toggleSpotifyPlayback']")) {
+    btn.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
+    const path = btn.querySelector("svg path");
+    if (path) path.setAttribute("d", isPlaying ? ICON_PAUSE : ICON_PLAY);
+  }
+  for (const btn of document.querySelectorAll("[data-action='toggleShuffle']")) {
+    btn.classList.toggle("is-active", state.shuffle);
+    btn.setAttribute("aria-pressed", state.shuffle ? "true" : "false");
+  }
+  for (const btn of document.querySelectorAll("[data-action='cycleRepeat']")) {
+    btn.classList.toggle("is-active", state.repeat !== "off");
+    btn.dataset.mode = state.repeat;
+    btn.setAttribute("aria-label", `Repeat: ${state.repeat}`);
+    const badge = btn.querySelector(".transport-btn__badge");
+    if (badge) badge.hidden = state.repeat !== "track";
+  }
 }
 
 function renderProgress() {
@@ -1495,8 +1577,8 @@ function renderNpPill() {
   const pill = elements.npPill;
   if (!pill) return;
   const now = state.nowPlaying;
-  const inAmbient = state.currentView === "ambient";
-  const shouldShow = Boolean(now) && !inAmbient;
+  const hideOnView = state.currentView === "ambient" || state.currentView === "now";
+  const shouldShow = Boolean(now) && !hideOnView;
   pill.hidden = !shouldShow;
   document.body.classList.toggle("has-pill", shouldShow);
   if (!shouldShow) return;
@@ -1558,6 +1640,54 @@ function startBubbleCornerTimer() {
   }, 90000);
 }
 
+function syncAmbientVideo() {
+  const screensaver = elements.ambientScreensaver;
+  const video = elements.ambientVideo;
+  if (!screensaver || !video) return;
+  const shouldPlay = state.currentView === "ambient" && state.ambientMode === "screensaver";
+  if (!shouldPlay) {
+    try { video.pause(); } catch {}
+    return;
+  }
+  if (video.currentSrc && screensaver.dataset.video === "on") {
+    video.play().catch(() => {});
+  } else {
+    loadAmbientVideoAt(0);
+  }
+}
+
+function loadAmbientVideoAt(index) {
+  const screensaver = elements.ambientScreensaver;
+  const video = elements.ambientVideo;
+  if (!screensaver || !video) return;
+  if (index >= AMBIENT_VIDEOS.length) {
+    // Every source failed — fall back to the generative drift scene.
+    screensaver.dataset.video = "off";
+    video.onerror = null;
+    video.oncanplay = null;
+    video.removeAttribute("src");
+    log("Ambient scenery: no video source loaded; using generative scene.");
+    return;
+  }
+  state.videoIndex = index;
+  video.onerror = () => {
+    log(`Ambient video source failed: ${AMBIENT_VIDEOS[index]}`);
+    loadAmbientVideoAt(index + 1);
+  };
+  video.oncanplay = () => {
+    screensaver.dataset.video = "on";
+    log(`Ambient scenery playing: ${AMBIENT_VIDEOS[index]}`, "success");
+  };
+  screensaver.dataset.video = "off";
+  video.src = AMBIENT_VIDEOS[index];
+  video.load();
+  const playPromise = video.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    // Autoplay may defer until canplay; that's fine — oncanplay flips the scene on.
+    playPromise.catch(() => {});
+  }
+}
+
 function startVisualizerIfNeeded() {
   if (state.ambientMode !== "visualizer") {
     stopVisualizer();
@@ -1597,34 +1727,64 @@ function stopVisualizer() {
 }
 
 function drawVisualizerFrame(ctx, w, h, phase, palette) {
-  const accent = (palette && palette[0]) || "#1ed760";
+  const accentA = (palette && palette[0]) || "#1ed760";
   const accentB = (palette && palette[1]) || "#70a6ff";
+  const accentC = (palette && palette[2]) || accentA;
   ctx.clearRect(0, 0, w, h);
-  const bars = 48;
-  const barWidth = w / bars;
-  const baseY = h * 0.78;
+
   const now = state.nowPlaying;
   const positionMs = now ? (now.paused ? now.position : now.position + (Date.now() - now.updatedAt)) : 0;
-  const beat = now ? (positionMs / 350) : phase;
-  const energy = now && !now.paused ? 1 : 0.35;
+  const playing = Boolean(now && !now.paused);
+  const energy = playing ? 1 : 0.42;
+  // Pseudo-beat locked to the playback timeline (~120bpm) so the motion tracks
+  // the song rather than free-running. Not a real FFT — DRM audio can't be tapped.
+  const beatPhase = (positionMs / 1000) * (120 / 60) * Math.PI * 2;
+  const pulse = (Math.sin(beatPhase) * 0.5 + 0.5) * energy;
+
+  const cx = w / 2;
+  const cy = h / 2;
+  const minDim = Math.min(w, h);
+  const innerR = minDim * 0.30 * (1 + pulse * 0.035);
+  const bars = 84;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
   for (let i = 0; i < bars; i++) {
     const t = i / bars;
-    const seed = Math.sin(phase * 0.9 + i * 0.42) * 0.5 + 0.5;
-    const beatPulse = Math.abs(Math.sin(beat + i * 0.18)) * 0.6;
-    const amplitude = (seed * 0.55 + beatPulse * 0.45) * energy;
-    const barH = amplitude * h * 0.42 + 4;
-    const x = i * barWidth + barWidth * 0.18;
-    const wBar = barWidth * 0.64;
-    const grad = ctx.createLinearGradient(0, baseY - barH, 0, baseY);
-    grad.addColorStop(0, accent);
-    grad.addColorStop(1, accentB);
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, baseY - barH, wBar, barH);
-    // mirror
-    ctx.globalAlpha = 0.18;
-    ctx.fillRect(x, baseY, wBar, barH * 0.6);
-    ctx.globalAlpha = 1;
+    const angle = t * Math.PI * 2 - Math.PI / 2;
+    const wobble =
+      Math.sin(phase * 0.7 + i * 0.35) * 0.5 +
+      Math.sin(phase * 0.33 + i * 0.11) * 0.3 +
+      Math.sin(beatPhase + i * 0.5) * 0.4;
+    const amp = (0.32 + (wobble * 0.5 + 0.5) * 0.68) * energy;
+    const len = amp * minDim * 0.16 + 6;
+    const x1 = Math.cos(angle) * innerR;
+    const y1 = Math.sin(angle) * innerR;
+    const x2 = Math.cos(angle) * (innerR + len);
+    const y2 = Math.sin(angle) * (innerR + len);
+    const color = (Math.sin(t * Math.PI * 2 + phase * 0.2) * 0.5 + 0.5) < 0.5 ? accentA : accentB;
+    ctx.strokeStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.globalAlpha = 0.32 + amp * 0.5;
+    ctx.lineWidth = Math.max(2, (minDim / bars) * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
   }
+  // Soft breathing ring just outside the album art.
+  ctx.globalAlpha = 0.12 + pulse * 0.14;
+  ctx.lineWidth = minDim * 0.012;
+  ctx.shadowColor = accentC;
+  ctx.shadowBlur = 40;
+  ctx.strokeStyle = accentC;
+  ctx.beginPath();
+  ctx.arc(0, 0, innerR * 0.92, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function formatDuration(ms) {
