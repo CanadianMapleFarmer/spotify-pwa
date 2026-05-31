@@ -95,12 +95,11 @@ const elements = {
   pairUrl: document.querySelector("#pairUrl"),
   deviceStatus: document.querySelector("#deviceStatus"),
   keyStatus: document.querySelector("#keyStatus"),
-  madeForYouShelf: document.querySelector("#madeForYouShelf"),
+  newReleasesShelf: document.querySelector("#newReleasesShelf"),
   playlistsHomeShelf: document.querySelector("#playlistsHomeShelf"),
   topShelf: document.querySelector("#topShelf"),
   signedOutHero: document.querySelector("#signedOutHero"),
   homeShelves: document.querySelector("#homeShelves"),
-  libraryMadeForYouShelf: document.querySelector("#libraryMadeForYouShelf"),
   playlistShelf: document.querySelector("#playlistShelf"),
   libraryAlbumsShelf: document.querySelector("#libraryAlbumsShelf"),
   libraryTracksShelf: document.querySelector("#libraryTracksShelf"),
@@ -654,18 +653,19 @@ async function loadHome() {
   const results = await Promise.allSettled([
     spotifyApiJson("/v1/me/playlists?limit=50"),
     spotifyApiJson("/v1/me/top/tracks?limit=18&time_range=medium_term"),
+    spotifyApiJson("/v1/browse/new-releases?limit=18"),
   ]);
   // Total failure (every endpoint rejected) signals a transient token/network
   // problem — throw so bootstrapData can retry instead of painting empty shelves.
   if (results.every((result) => result.status === "rejected")) {
     throw results[0].reason || new Error("Home data requests all failed.");
   }
-  const [playlists, top] = results;
-  const { generated, own } = splitPlaylists(playlists.value?.items || []);
-  // "Made For You" = Spotify-generated mixes (Discover Weekly, Release Radar,
-  // Daylist, Daily Mix, On Repeat). The /recommendations + /browse APIs are
-  // deprecated, so these owner:spotify playlists are the discovery source.
-  renderShelf(elements.madeForYouShelf, "Made For You", generated.slice(0, 18), "playlist", {
+  const [playlists, top, newReleases] = results;
+  const { own } = splitPlaylists(playlists.value?.items || []);
+  // Spotify deprecated /recommendations + /browse/featured-playlists, and this
+  // account follows no owner:spotify mixes, so "New Releases" is the live source
+  // for fresh discovery on Home.
+  renderShelf(elements.newReleasesShelf, "New Releases", newReleases.value?.albums?.items || [], "album", {
     hideIfEmpty: true,
   });
   renderShelf(elements.playlistsHomeShelf, "Your Playlists", own.slice(0, 18), "playlist", {
@@ -676,17 +676,15 @@ async function loadHome() {
   });
 }
 
-// Spotify's first-party generated playlists carry owner.id === "spotify".
+// Spotify's first-party mixes carry owner.id === "spotify" and are excluded so
+// the playlist shelves only show the user's own/followed playlists.
 function splitPlaylists(items) {
-  const generated = [];
-  const own = [];
-  for (const playlist of (items || []).filter(Boolean)) {
+  const own = (items || []).filter(Boolean).filter((playlist) => {
     const ownerId = (playlist.owner?.id || "").toLowerCase();
     const ownerName = (playlist.owner?.display_name || "").toLowerCase();
-    if (ownerId === "spotify" || ownerName === "spotify") generated.push(playlist);
-    else own.push(playlist);
-  }
-  return { generated, own };
+    return ownerId !== "spotify" && ownerName !== "spotify";
+  });
+  return { own };
 }
 
 function goToSettings() {
@@ -699,7 +697,7 @@ function toggleSignedOutHero(show) {
 }
 
 const HOME_SHELVES = [
-  ["madeForYouShelf", "Made For You"],
+  ["newReleasesShelf", "New Releases"],
   ["playlistsHomeShelf", "Your Playlists"],
   ["topShelf", "On Repeat For You"],
 ];
@@ -751,8 +749,7 @@ async function loadLibrary() {
     spotifyApiJson("/v1/me/albums?limit=24"),
     spotifyApiJson("/v1/me/tracks?limit=24"),
   ]);
-  const { generated, own } = splitPlaylists(playlists.items || []);
-  renderShelf(elements.libraryMadeForYouShelf, "Made For You", generated, "playlist", { hideIfEmpty: true });
+  const { own } = splitPlaylists(playlists.items || []);
   renderShelf(elements.playlistShelf, "Your Playlists", own, "playlist");
   renderShelf(elements.libraryAlbumsShelf, "Albums", (albums.items || []).map((item) => item.album), "album");
   renderShelf(elements.libraryTracksShelf, "Saved Tracks", (tracks.items || []).map((item) => item.track), "track");
