@@ -1848,21 +1848,24 @@ body.is-phone-pair {
 
 .now-backdrop {
   position: absolute;
-  inset: 0;
+  inset: -8%;
   z-index: 0;
   background-size: cover;
   background-position: center;
   background-color: #06080d;
-  transform: scale(1.1);
+  transform: scale(1.16);
+  filter: blur(52px) saturate(1.2) brightness(0.52);
 }
 
 .now-backdrop::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgba(6, 8, 13, 0.8);
-  backdrop-filter: blur(60px) saturate(1.3);
-  -webkit-backdrop-filter: blur(60px) saturate(1.3);
+  background: radial-gradient(
+    120% 90% at 50% 30%,
+    rgba(6, 8, 13, 0.22),
+    rgba(6, 8, 13, 0.78) 75%
+  );
 }
 
 .view-now .now-layout {
@@ -1922,21 +1925,28 @@ body.is-phone-pair {
 
 .collection-backdrop {
   position: absolute;
-  inset: 0;
+  inset: -8%;
   z-index: 0;
   background-size: cover;
   background-position: center;
   background-color: #06080d;
-  transform: scale(1.1);
+  transform: scale(1.16);
+  /* Blur the image element directly (not backdrop-filter) — TV browsers
+     render element filters far more smoothly than backdrop-filter, which
+     comes out blocky/banded on the VIDAA GPU. */
+  filter: blur(52px) saturate(1.2) brightness(0.56);
 }
 
 .collection-backdrop::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgba(6, 8, 13, 0.82);
-  backdrop-filter: blur(60px) saturate(1.3);
-  -webkit-backdrop-filter: blur(60px) saturate(1.3);
+  background: linear-gradient(
+    105deg,
+    rgba(6, 8, 13, 0.74) 0%,
+    rgba(6, 8, 13, 0.42) 48%,
+    rgba(6, 8, 13, 0.7) 100%
+  );
 }
 
 .collection-layout {
@@ -1955,12 +1965,15 @@ body.is-phone-pair {
   align-self: start;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: clamp(10px, 1.6vh, 18px);
 }
 
 .collection-art {
   width: 100%;
-  max-width: 420px;
+  /* Bound art by viewport height so the whole head (art + title + buttons)
+     fits on screen — otherwise the sticky head outgrows the viewport and the
+     Play/Shuffle buttons get pinned below the fold (worse with TV overscan). */
+  max-width: min(420px, 34vh);
 }
 
 .collection-art img {
@@ -1978,7 +1991,12 @@ body.is-phone-pair {
 
 .collection-head h2 {
   margin-bottom: 4px;
-  font-size: clamp(2.2rem, 3.4vw, 4rem);
+  font-size: clamp(1.9rem, 2.6vw, 3.1rem);
+  line-height: 1.05;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .collection-meta {
