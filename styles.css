@@ -1867,7 +1867,7 @@ body.is-phone-pair {
 }
 
 /* === Collection detail (album / playlist) === */
-.view-collection {
+.view-collection.is-visible {
   position: relative;
   display: flex;
   align-items: flex-start;
