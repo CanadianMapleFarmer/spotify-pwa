@@ -915,9 +915,9 @@ async function fetchCollectionTracks(item, type) {
     const data = await spotifyApiJson(`/v1/albums/${item.id}/tracks?limit=50`);
     return (data?.items || []).map((track) => normalizeCollectionTrack(track));
   }
-  const data = await spotifyApiJson(`/v1/playlists/${item.id}/tracks?limit=50`);
+  const data = await spotifyApiJson(`/v1/playlists/${item.id}/items?limit=50`);
   return (data?.items || [])
-    .map((entry) => entry.track)
+    .map((entry) => entry.item ?? entry.track)
     .filter((track) => track && track.uri)
     .map((track) => normalizeCollectionTrack(track));
 }
