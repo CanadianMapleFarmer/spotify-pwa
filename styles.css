@@ -14,6 +14,9 @@
   --green: #1ed760;
   --blue: #70a6ff;
   --warn: #ffca68;
+  /* Shared corner radii — tokenized so cards/artwork stay visually consistent. */
+  --radius-card: 14px;
+  --radius-art: 10px;
 }
 
 * {
@@ -263,7 +266,7 @@ h2 {
   letter-spacing: -0.015em;
 }
 
-.shelf h3,
+.shelf-title,
 .settings-section__title {
   font-family: var(--font-display);
   font-weight: 600;
@@ -293,7 +296,6 @@ h2 {
 .auth-panel,
 .status-strip,
 .diagnostics,
-.shelf,
 .now-layout {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -386,25 +388,43 @@ body.debug-on .status-strip {
   margin: 30px 0 16px;
 }
 
+/* De-boxed: structure comes from spacing + the two-tier header, not a panel. */
 .shelf {
   min-height: 250px;
-  margin-bottom: 18px;
-  padding: 18px;
+  margin-bottom: 30px;
+  padding: 0;
 }
 
-.shelf h3 {
-  margin: 0 0 14px;
-  font-size: 1.35rem;
+/* Two-tier header: small uppercase eyebrow over a larger title. */
+.shelf-head {
+  display: grid;
+  gap: 3px;
+  margin: 0 6px 14px;
+}
+
+.shelf-eyebrow {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.shelf-title {
+  margin: 0;
+  font-size: 1.55rem;
+  line-height: 1.05;
 }
 
 .rail {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(210px, 260px);
-  gap: 16px;
+  gap: 18px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-padding-inline: 18px;
+  scroll-padding-inline: 6px;
   padding: 6px 6px 18px;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
@@ -416,37 +436,51 @@ body.debug-on .status-strip {
 
 .card {
   min-height: 320px;
-  padding: 12px;
-  border: 2px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: var(--panel-strong);
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-card);
+  background: transparent;
   color: #f6f8fb;
   text-align: left;
+  /* TV-safe: animate only transform/opacity. */
+  transition: transform 200ms ease;
+}
+
+.card:focus,
+.card.is-focused {
+  transform: scale(1.04);
 }
 
 .card img {
   width: 100%;
-  aspect-ratio: 1;
+  height: 232px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: var(--radius-art);
   background: #111824;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
 }
 
 .card-title {
   display: -webkit-box;
   min-height: 2.7em;
-  margin: 12px 0 6px;
+  margin: 14px 2px 4px;
   overflow: hidden;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  font-size: 1.05rem;
-  font-weight: 900;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.28;
 }
 
 .card-subtitle {
   display: -webkit-box;
+  margin: 0 2px;
   overflow: hidden;
   color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.35;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
@@ -1036,6 +1070,10 @@ button.is-active {
 
   .rail {
     grid-auto-columns: minmax(290px, 360px);
+  }
+
+  .card img {
+    height: 320px;
   }
 
   button {
@@ -2260,6 +2298,14 @@ body.is-phone-pair {
 }
 
 /* === Shelf placeholder cards (loading / empty / error) === */
+/* The artwork .card is de-boxed/transparent; text-only state cards re-add a
+   panel so they stay legible without an image. */
+.card--placeholder,
+.card--retry {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+}
+
 .card--placeholder {
   display: flex;
   align-items: center;

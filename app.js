@@ -812,8 +812,7 @@ function markShelvesError(error) {
 function shelfPlaceholder(container, title, kind, message, withRetry) {
   if (!container) return;
   container.replaceChildren();
-  const heading = document.createElement("h3");
-  heading.textContent = title;
+  const head = buildShelfHead(title, kind === "error" ? "Needs attention" : "Loading");
   const rail = document.createElement("div");
   rail.className = "rail";
   const note = document.createElement("div");
@@ -827,7 +826,7 @@ function shelfPlaceholder(container, title, kind, message, withRetry) {
     retry.textContent = "Retry";
     rail.append(retry);
   }
-  container.append(heading, rail);
+  container.append(head, rail);
 }
 
 async function loadLibrary() {
@@ -860,7 +859,7 @@ async function loadDevices() {
   }
 }
 
-function renderShelf(container, title, items, type, { hideIfEmpty = false } = {}) {
+function renderShelf(container, title, items, type, { hideIfEmpty = false, eyebrow } = {}) {
   if (!container) return;
   container.replaceChildren();
   const visible = (items || []).filter(Boolean);
@@ -871,8 +870,7 @@ function renderShelf(container, title, items, type, { hideIfEmpty = false } = {}
     return;
   }
   container.hidden = false;
-  const heading = document.createElement("h3");
-  heading.textContent = title;
+  const head = buildShelfHead(title, eyebrow ?? eyebrowForType(type));
   const rail = document.createElement("div");
   rail.className = "rail";
   rail.setAttribute("role", "list");
@@ -883,7 +881,39 @@ function renderShelf(container, title, items, type, { hideIfEmpty = false } = {}
   if (!rail.children.length) {
     rail.append(emptyState("Nothing to show yet."));
   }
-  container.append(heading, rail);
+  container.append(head, rail);
+}
+
+// Two-tier shelf header: a small uppercase eyebrow over the larger title.
+// Presentation only — neither element is focusable (no .focusable / tabindex),
+// so the spatial-focus remote nav pool is untouched.
+function buildShelfHead(title, eyebrow) {
+  const head = document.createElement("div");
+  head.className = "shelf-head";
+  if (eyebrow) {
+    const kicker = document.createElement("span");
+    kicker.className = "shelf-eyebrow";
+    kicker.textContent = eyebrow;
+    head.append(kicker);
+  }
+  const heading = document.createElement("h3");
+  heading.className = "shelf-title";
+  heading.textContent = title;
+  head.append(heading);
+  return head;
+}
+
+function eyebrowForType(type) {
+  switch (type) {
+    case "playlist":
+      return "Playlists";
+    case "album":
+      return "Albums";
+    case "track":
+      return "Tracks";
+    default:
+      return "Library";
+  }
 }
 
 function createMediaCard(item, type) {
@@ -2698,7 +2728,7 @@ function getImage(item) {
 
 function emptyState(message) {
   const div = document.createElement("div");
-  div.className = "card";
+  div.className = "card card--placeholder";
   div.textContent = message;
   return div;
 }
