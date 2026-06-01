@@ -20,6 +20,11 @@ jobs:
   deploy:
     name: Build & deploy
     runs-on: ubuntu-latest
+    # action-hosting-deploy@v0.10.0 still declares node20 upstream. GitHub forces
+    # all actions onto Node 24 on 2026-06-16 anyway, so opt in now to clear the
+    # deprecation warning and validate the action on Node 24 ahead of the cutover.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v6
