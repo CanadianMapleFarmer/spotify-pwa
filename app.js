@@ -193,6 +193,9 @@ const elements = {
   phonePairCode: document.querySelector("#phonePairCode"),
   phonePairErrorMessage: document.querySelector("#phonePairErrorMessage"),
   phonePairSuccessMessage: document.querySelector("#phonePairSuccessMessage"),
+  exitDialog: document.querySelector("#exitDialog"),
+  exitDialogCancel: document.querySelector("#exitDialogCancel"),
+  exitDialogConfirm: document.querySelector("#exitDialogConfirm"),
 };
 
 const actions = {
@@ -230,6 +233,8 @@ const actions = {
   resetSpotify,
   clearLog,
   toggleDebugView,
+  cancelExit,
+  confirmExit,
 };
 
 function init() {
@@ -397,6 +402,11 @@ function focusableElements() {
 // Scope the focus pool to the chrome (nav) + the active view + the now-playing pill.
 // This stops "down"/"right" from teleporting into an off-screen view's controls.
 function activeFocusables() {
+  // While the exit dialog is open it owns the focus pool — trap the remote on its
+  // Cancel/Exit buttons so arrows can't escape to the (covered) view behind it.
+  if (isExitDialogOpen()) {
+    return Array.from(elements.exitDialog.querySelectorAll(".focusable:not([disabled])")).filter(isVisibleElement);
+  }
   const roots = [];
   const nav = document.querySelector(".nav");
   if (nav) roots.push(nav);
@@ -1193,6 +1203,11 @@ function collectionBack() {
 }
 
 function handleBack() {
+  // Exit dialog is modal: Back dismisses it (cancel) rather than navigating.
+  if (isExitDialogOpen()) {
+    cancelExit();
+    return;
+  }
   // In fullscreen ambient, Back should drop out of fullscreen first, not navigate.
   if (document.fullscreenElement) {
     exitAmbientFullscreen();
@@ -1210,8 +1225,60 @@ function handleBack() {
     log(`Back: returned to ${target}.`);
     return;
   }
+  // At the Home root, Back asks whether to close the app instead of being a no-op.
+  if (state.currentView === "home") {
+    openExitDialog();
+    return;
+  }
   setView("home");
   log("Back key observed. Returned to Home.");
+}
+
+function isExitDialogOpen() {
+  return Boolean(elements.exitDialog) && !elements.exitDialog.hidden;
+}
+
+let exitDialogReturnFocus = null;
+
+function openExitDialog() {
+  const dialog = elements.exitDialog;
+  if (!dialog || isExitDialogOpen()) return;
+  exitDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  dialog.hidden = false;
+  // Default to Cancel so an accidental extra Enter doesn't close the app.
+  if (elements.exitDialogCancel) focusElement(elements.exitDialogCancel);
+  log("Exit dialog opened.");
+}
+
+function closeExitDialog() {
+  const dialog = elements.exitDialog;
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  if (exitDialogReturnFocus && document.contains(exitDialogReturnFocus)) {
+    focusElement(exitDialogReturnFocus);
+  } else {
+    const focusables = activeFocusables();
+    if (focusables.length) focusElement(focusables[0]);
+  }
+  exitDialogReturnFocus = null;
+}
+
+function cancelExit() {
+  closeExitDialog();
+  log("Exit cancelled.");
+}
+
+function confirmExit() {
+  log("Exit confirmed — attempting to close the app.");
+  closeExitDialog();
+  // Best-effort exit. On the VIDAA app container window.close() returns the user to
+  // the launcher; some firmware exposes a Hisense exit hook. Desktop browsers ignore
+  // window.close() for non-script-opened windows — that's fine, the dialog is already
+  // gone. Each call is wrapped because some TV builds throw on unsupported APIs.
+  try {
+    if (typeof window.Hisense_exitApp === "function") window.Hisense_exitApp();
+  } catch {}
+  try { window.close(); } catch {}
 }
 
 function withDeviceIdParam(path) {
@@ -2273,6 +2340,27 @@ function inactiveSceneVideo() {
   return state.sceneActiveVideo === "b" ? a : b;
 }
 
+// On the TV (old Blink) a muted <video> that still carries an audio track grabs the
+// single hardware audio decoder / audio focus, which pauses the Spotify Web Playback
+// SDK — and when Spotify plays, the video stalls. They become mutually exclusive.
+// Desktop Chromium handles muted video fine, so this is purely defensive for the TV.
+// The HTML `muted` attribute alone isn't enough; we force the muting properties AND
+// disable the clip's audio tracks outright so the video never enters the audio
+// pipeline. audioTracks populates after loadedmetadata, so call this then too.
+function silenceVideoEl(el) {
+  if (!el) return;
+  el.muted = true;
+  el.defaultMuted = true;
+  el.volume = 0;
+  try { el.disableRemotePlayback = true; } catch {}
+  const tracks = el.audioTracks;
+  if (tracks && typeof tracks.length === "number") {
+    for (let i = 0; i < tracks.length; i += 1) {
+      try { tracks[i].enabled = false; } catch {}
+    }
+  }
+}
+
 // Called by setAmbientMode + setView. Decides whether Scene should be running and
 // kicks off (or stops) playback. Stopping pauses both elements without tearing
 // down sources, so returning to Scene resumes quickly.
@@ -2293,6 +2381,7 @@ function syncAmbientVideo() {
   if (screensaver.dataset.video === "on" && activeSceneVideo()?.currentSrc) {
     const token = ++state.sceneToken;
     const current = activeSceneVideo();
+    silenceVideoEl(current);
     current.onended = () => {
       if (token !== state.sceneToken) return;
       advanceSceneClip(token);
@@ -2377,6 +2466,14 @@ function advanceSceneClip(token, attempt = 0) {
   next.onerror = null;
   next.oncanplay = null;
   next.onended = null;
+  next.onloadedmetadata = null;
+
+  silenceVideoEl(next);
+  // audioTracks are only known once metadata loads, so re-disable them then.
+  next.onloadedmetadata = () => {
+    if (token !== state.sceneToken) return;
+    silenceVideoEl(next);
+  };
 
   next.onerror = () => {
     if (token !== state.sceneToken) return;

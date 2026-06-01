@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=30">
+    <link rel="stylesheet" href="/styles.css?v=31">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -420,6 +420,20 @@
       </div>
     </aside>
 
+    <!-- Exit confirmation: shown when Back is pressed at the Home root. Body-level
+         overlay so it sits above every view, the pill, and ambient/fullscreen. -->
+    <div class="exit-dialog" id="exitDialog" role="dialog" aria-modal="true" aria-labelledby="exitDialogTitle" aria-describedby="exitDialogBody" hidden>
+      <div class="exit-dialog__backdrop" aria-hidden="true" data-action="cancelExit"></div>
+      <div class="exit-dialog__panel" role="document">
+        <h2 class="exit-dialog__title" id="exitDialogTitle">Exit app?</h2>
+        <p class="exit-dialog__body" id="exitDialogBody">Close Spotify TV and return to your home screen.</p>
+        <div class="exit-dialog__actions">
+          <button class="focusable exit-dialog__btn" id="exitDialogCancel" data-action="cancelExit">Cancel</button>
+          <button class="focusable exit-dialog__btn exit-dialog__btn--danger" id="exitDialogConfirm" data-action="confirmExit">Exit</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Firebase SDK + project config served from Hosting's reserved namespace.
          Auto-initializes window.firebase / firebase.firestore() — no API key in source.
          Requires Firestore to be enabled on the Firebase project. -->
@@ -427,6 +441,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
     <script src="/pexels-config.js?v=1"></script>
-    <script src="/app.js?v=30" type="module"></script>
+    <script src="/app.js?v=31" type="module"></script>
   </body>
 </html>
