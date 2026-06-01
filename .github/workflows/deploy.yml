@@ -41,7 +41,10 @@ jobs:
           test -f .firebaserc
           test -f firestore.rules
           test -f pexels-config.js
-          node --check app.js
+          # app.js ships as <script type="module">; check it in module mode so
+          # module-only errors (e.g. duplicate top-level lexical declarations) are
+          # caught here instead of silently shipping a non-executing bundle.
+          node --check --input-type=module < app.js
           node --check pexels-config.js
           echo "Payload OK"
 

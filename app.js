@@ -3205,10 +3205,6 @@ function updateImgseqDiag() {
     errorRow;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
 async function playImageSequence(clip, token) {
   stopImageSequence();
   const img = elements.ambientImgSeq;
