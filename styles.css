@@ -795,13 +795,34 @@ body.debug-on .status-strip {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: min(34vw, 540px);
-  aspect-ratio: 1;
+  /* aspect-ratio is weakly supported on the VIDAA browser, so the circle is
+     sized with explicit px width + height instead. clamp keeps it responsive
+     between 720p and 1080p without relying on aspect-ratio. */
+  width: clamp(280px, 34vw, 540px);
+  height: clamp(280px, 34vw, 540px);
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  overflow: hidden;
+  overflow: visible;
   z-index: 2;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+}
+
+/* The pulsing ring is a pseudo-element animated with transform + opacity only
+   (compositor-only). The original animated box-shadow spread + color-mix(), both
+   of which the VIDAA browser cannot render — box-shadow animation janks the GPU
+   and an unsupported color-mix() drops the whole declaration. A solid rgba ring
+   that scales/fades avoids both problems. */
+.ambient-visualizer__art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid rgba(30, 215, 96, 0.5);
+  /* Use the accent when it resolves; the rgba above is the guaranteed fallback. */
+  border-color: var(--ambient-accent-a, rgba(30, 215, 96, 0.5));
+  opacity: 0.5;
+  pointer-events: none;
+  will-change: transform, opacity;
   animation: pulse-ring 1.8s ease-in-out infinite;
 }
 
@@ -809,6 +830,7 @@ body.debug-on .status-strip {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 50%;
 }
 
 .ambient-stage[data-mode="visualizer"]:not(.has-artwork) .ambient-visualizer__art {
@@ -820,8 +842,9 @@ body.debug-on .status-strip {
 }
 
 @keyframes pulse-ring {
-  0%, 100% { box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6), 0 0 0 0 color-mix(in oklab, var(--ambient-accent-a) 50%, transparent); }
-  50%      { box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6), 0 0 0 36px color-mix(in oklab, var(--ambient-accent-a) 0%, transparent); }
+  0%   { transform: scale(1); opacity: 0.5; }
+  50%  { transform: scale(1.2); opacity: 0; }
+  100% { transform: scale(1); opacity: 0.5; }
 }
 
 .ambient-stage[data-mode="visualizer"] .ambient-content,
@@ -2321,6 +2344,7 @@ body.is-phone-pair {
   .drift,
   .ambient-room__art,
   .ambient-visualizer__art,
+  .ambient-visualizer__art::after,
   .np-bubble {
     animation: none !important;
     transition: opacity 80ms linear !important;

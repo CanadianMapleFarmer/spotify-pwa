@@ -72,6 +72,8 @@ const state = {
   pillDimTimer: 0,
   visualizerRaf: 0,
   visualizerPhase: 0,
+  visualizerRect: null,
+  visualizerResizeHandler: null,
   collection: null,
   collectionShuffle: false,
   collectionReturnView: "home",
@@ -2104,6 +2106,28 @@ function loadAmbientVideoAt(index) {
   }
 }
 
+// Measure the canvas once (and on resize) and resize the backing store to match,
+// scaling for devicePixelRatio. getBoundingClientRect() forces a layout flush, so
+// we keep it out of the per-frame draw loop — on the VIDAA GPU that per-frame
+// measure was a real cost. The cached rect width/height (CSS pixels) is what the
+// draw loop reads each frame.
+function measureVisualizerCanvas(canvas, ctx) {
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  // Cap dpr at 2 so 4K-reported panels don't blow up the backing store.
+  const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  const bw = Math.floor(w * dpr);
+  const bh = Math.floor(h * dpr);
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+    // Reset the transform before re-applying dpr scale so it never compounds.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  state.visualizerRect = { width: w, height: h };
+}
+
 function startVisualizerIfNeeded() {
   if (state.ambientMode !== "visualizer") {
     stopVisualizer();
@@ -2115,8 +2139,14 @@ function startVisualizerIfNeeded() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  // TV-optimized: cap to ~30fps and dpr 1 so the canvas work stays cheap on the
-  // VIDAA GPU. Anything higher just dropped frames and lagged the whole UI.
+  // Measure once on start, then only on resize — never per frame.
+  measureVisualizerCanvas(canvas, ctx);
+  if (!state.visualizerResizeHandler) {
+    state.visualizerResizeHandler = () => measureVisualizerCanvas(canvas, ctx);
+    window.addEventListener("resize", state.visualizerResizeHandler);
+  }
+  // TV-optimized: cap to ~30fps so the canvas work stays cheap on the VIDAA GPU.
+  // Anything higher just dropped frames and lagged the whole UI.
   const frameInterval = 1000 / 30;
   let lastFrame = 0;
   const draw = (ts) => {
@@ -2127,15 +2157,10 @@ function startVisualizerIfNeeded() {
     state.visualizerRaf = prefersReduced ? 0 : window.requestAnimationFrame(draw);
     if (!prefersReduced && ts - lastFrame < frameInterval) return;
     lastFrame = ts || 0;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width));
-    const h = Math.max(1, Math.floor(rect.height));
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
+    const rect = state.visualizerRect;
+    if (!rect) return;
     state.visualizerPhase += prefersReduced ? 0 : 0.06;
-    drawVisualizerFrame(ctx, w, h, state.visualizerPhase, state.paletteCache.palette);
+    drawVisualizerFrame(ctx, rect.width, rect.height, state.visualizerPhase, state.paletteCache.palette);
   };
   state.visualizerRaf = window.requestAnimationFrame(draw);
 }
@@ -2145,6 +2170,11 @@ function stopVisualizer() {
     window.cancelAnimationFrame(state.visualizerRaf);
     state.visualizerRaf = 0;
   }
+  if (state.visualizerResizeHandler) {
+    window.removeEventListener("resize", state.visualizerResizeHandler);
+    state.visualizerResizeHandler = null;
+  }
+  state.visualizerRect = null;
 }
 
 function drawVisualizerFrame(ctx, w, h, phase, palette) {
