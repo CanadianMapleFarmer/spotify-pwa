@@ -1031,6 +1031,7 @@ body[data-view="ambient"] .app {
 }
 
 .scene-np__status {
+  display: none;
   margin: 4px 0 0;
   padding: 4px 10px;
   border-radius: 999px;
@@ -1039,6 +1040,11 @@ body[data-view="ambient"] .app {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+/* The audio-strip badge is a diagnostic — only show it in Debug View. */
+body.debug-on .scene-np__status {
+  display: inline-flex;
 }
 
 .scene-np__status[data-state="idle"]   { background: rgba(255,255,255,0.08); color: rgba(232,236,241,0.85); }

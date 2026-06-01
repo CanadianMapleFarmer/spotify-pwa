@@ -451,14 +451,24 @@ function focusableElements() {
   return activeFocusables();
 }
 
-// When the diagnostics log has focus, arrow up/down should scroll it rather
-// than move focus elsewhere — VIDAA has no mouse/wheel, so this is the only
-// way to read past the visible portion of the log on a TV remote.
-function scrollIfLogFocused(direction) {
-  const active = document.activeElement;
-  if (!active || active.id !== "log") return false;
-  const step = Math.max(80, active.clientHeight - 40);
-  active.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
+function isDiagnosticsOpen() {
+  const panel = elements.diagnostics || document.getElementById("diagnostics");
+  return Boolean(panel) && !panel.hidden;
+}
+
+// While the debug overlay is open, up/down scroll the panel directly — VIDAA
+// has no mouse/wheel, so this is the only way to read past the visible portion
+// on a TV remote. When debug is on the inner .log has max-height:none, so the
+// .diagnostics panel itself is the scroll container (not the log element).
+function scrollDiagnostics(direction) {
+  const panel = elements.diagnostics || document.getElementById("diagnostics");
+  if (!panel) return false;
+  const step = Math.max(120, panel.clientHeight - 60);
+  try {
+    panel.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
+  } catch {
+    panel.scrollTop += direction === "down" ? step : -step;
+  }
   return true;
 }
 
@@ -527,11 +537,28 @@ function focusElement(element) {
   if (!element) return;
   const focusables = focusableElements();
   state.focusIndex = Math.max(0, focusables.indexOf(element));
-  element.focus();
+  // preventScroll stops the browser's automatic scroll-on-focus, which on
+  // VIDAA scrolls the fixed ambient overlay and leaves a stuck bar at the
+  // bottom. keepElementVisible handles any intentional scrolling instead.
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    element.focus();
+  }
   keepElementVisible(element);
 }
 
 function keepElementVisible(element) {
+  // The ambient view is a fixed, full-bleed overlay (position:fixed; inset:0) —
+  // nothing in it is ever in normal scroll flow. scrollIntoView there still
+  // scrolls the document on VIDAA and leaves a "bar" stuck at the bottom that
+  // never scrolls back, so skip it entirely and hard-pin the page to the top.
+  if (document.body.dataset.view === "ambient") {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    return;
+  }
   const rail = element.closest(".rail");
   if (rail) {
     const railRect = rail.getBoundingClientRect();
@@ -645,7 +672,10 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowDown":
       event.preventDefault();
-      if (scrollIfLogFocused("down")) break;
+      if (isDiagnosticsOpen()) {
+        scrollDiagnostics("down");
+        break;
+      }
       moveFocusDirectional("down");
       break;
     case "ArrowLeft":
@@ -655,7 +685,10 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowUp":
       event.preventDefault();
-      if (scrollIfLogFocused("up")) break;
+      if (isDiagnosticsOpen()) {
+        scrollDiagnostics("up");
+        break;
+      }
       moveFocusDirectional("up");
       break;
     case "Enter":
@@ -1289,6 +1322,12 @@ function handleBack() {
   // Exit dialog is modal: Back dismisses it (cancel) rather than navigating.
   if (isExitDialogOpen()) {
     cancelExit();
+    return;
+  }
+  // Debug overlay traps up/down for scrolling — Back closes it so the remote
+  // isn't stuck unable to navigate the rest of the screen.
+  if (isDiagnosticsOpen()) {
+    toggleDebugView();
     return;
   }
   if (state.currentView === "collection") {
