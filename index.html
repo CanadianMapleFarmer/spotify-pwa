@@ -214,7 +214,8 @@
           </div>
 
           <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-video="off">
-            <video class="ambient-video" id="ambientVideo" muted loop playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
+            <video class="ambient-video" id="ambientVideo" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
+            <video class="ambient-video ambient-video--b" id="ambientVideoB" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
             <span class="ambient-video__scrim" aria-hidden="true"></span>
             <span class="drift drift--a" id="ambientDriftA"></span>
             <span class="drift drift--b" id="ambientDriftB"></span>
@@ -255,6 +256,17 @@
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Scene</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
+            </div>
+            <div class="ambient-controls__scene" id="ambientSceneControls">
+              <button class="focusable scene-btn" id="sceneCategoryBtn" data-action="toggleSceneCategory" aria-label="Scene category: Nature" title="Toggle Scene category">
+                <svg class="scene-btn__icon scene-btn__icon--nature" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 6l-3.75 5 2.85 3.8-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22L14 6z"/></svg>
+                <svg class="scene-btn__icon scene-btn__icon--skyline" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>
+                <span class="scene-btn__label" id="sceneCategoryLabel">Nature</span>
+              </button>
+              <button class="focusable scene-btn scene-btn--skip" id="sceneSkipBtn" data-action="skipSceneClip" aria-label="Skip to next Scene clip" title="Next clip">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
+                <span class="scene-btn__label">Skip</span>
+              </button>
             </div>
             <div class="ambient-controls__transport">
               <button class="focusable transport-btn" data-action="toggleShuffle" aria-label="Shuffle" aria-pressed="false">
@@ -396,6 +408,7 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
+    <script src="/pexels-config.js?v=1"></script>
     <script src="/app.js?v=27" type="module"></script>
   </body>
 </html>

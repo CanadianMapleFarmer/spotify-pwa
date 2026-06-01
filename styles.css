@@ -1773,11 +1773,66 @@ body.is-phone-pair {
 }
 
 .ambient-controls__modes,
-.ambient-controls__transport {
+.ambient-controls__transport,
+.ambient-controls__scene {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+/* Scene category + skip controls — only relevant while Scene mode is active. */
+.ambient-controls__scene {
+  display: none;
+}
+
+.ambient-stage[data-mode="screensaver"] .ambient-controls__scene {
+  display: flex;
+}
+
+.scene-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 50px;
+  padding: 10px 22px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(10, 14, 22, 0.55);
+  color: #f6f8fb;
+  font-weight: 700;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: transform 140ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.scene-btn:hover {
+  background: rgba(20, 26, 38, 0.7);
+}
+
+.scene-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* The category toggle holds both icons; show only the one for the active category. */
+.scene-btn__icon {
+  display: none;
+}
+
+#sceneCategoryBtn[data-category="nature"] .scene-btn__icon--nature,
+#sceneCategoryBtn[data-category="skyline"] .scene-btn__icon--skyline {
+  display: inline-block;
+}
+
+/* Default (before JS sets data-category): show the nature icon. */
+#sceneCategoryBtn:not([data-category]) .scene-btn__icon--nature {
+  display: inline-block;
+}
+
+.scene-btn__label {
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
 }
 
 .ambient-mode-btn {
@@ -1821,6 +1876,8 @@ body.is-phone-pair {
 }
 
 /* === Screensaver video scenery === */
+/* A/B crossfade: both clips are stacked; the one matching data-active fades in.
+   We animate opacity only (TV-safe) so the swap is seamless. */
 .ambient-video {
   position: absolute;
   inset: 0;
@@ -1831,7 +1888,8 @@ body.is-phone-pair {
   transition: opacity 800ms ease;
 }
 
-.ambient-screensaver[data-video="on"] .ambient-video {
+.ambient-screensaver[data-video="on"][data-active="a"] .ambient-video:not(.ambient-video--b),
+.ambient-screensaver[data-video="on"][data-active="b"] .ambient-video--b {
   opacity: 1;
 }
 

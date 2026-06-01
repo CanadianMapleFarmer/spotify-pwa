@@ -23,6 +23,7 @@ const storageKeys = {
   pairLoginUrl: "spotify-probe-pair-login-url",
   debugVisible: "spotify-pwa.debug-visible",
   ambientMode: "spotify-pwa.ambient-mode",
+  sceneCategory: "spotify-pwa.scene-category",
 };
 
 const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
@@ -49,6 +50,25 @@ const AMBIENT_VIDEOS = [
   "https://assets.mixkit.co/videos/preview/mixkit-traffic-in-the-city-during-the-night-4055-large.mp4",
 ];
 
+// === Pexels long-form Scene scenery ===========================================
+// Scene mode prefers fresh, full-length clips from the Pexels video API. The key
+// is injected at deploy time into window.__PEXELS_KEY__ (see pexels-config.js);
+// it is empty locally and on PR previews, so Scene transparently falls back to
+// the bundled AMBIENT_VIDEOS loops. Per Pexels terms we keep clips in memory
+// only for the current session — nothing is written to localStorage/disk.
+const SCENE_CATEGORIES = ["nature", "skyline"];
+const SCENE_CATEGORY_LABELS = { nature: "Nature", skyline: "City" };
+// A few queries per category; we pick one at random each fetch so repeat visits
+// don't always surface the same page of results.
+const SCENE_QUERIES = {
+  nature: ["nature landscape", "mountains", "forest", "ocean waves"],
+  skyline: ["city skyline night", "city aerial", "cityscape timelapse"],
+};
+const PEXELS_VIDEO_SEARCH = "https://api.pexels.com/videos/search";
+const PEXELS_PER_PAGE = 20;
+const PEXELS_MAX_PAGE = 5; // keep paging shallow so results stay relevant
+const PEXELS_MAX_RETRIES = 3; // for 429 backoff
+
 const state = {
   focusIndex: 0,
   spotifyPlayer: null,
@@ -62,7 +82,13 @@ const state = {
   nowPlaying: null,
   shuffle: false,
   repeat: "off",
-  videoIndex: -1,
+  sceneCategory: "nature",
+  scenePlaylist: [], // in-memory list of Pexels mp4 URLs (shuffled)
+  scenePlaylistIndex: -1,
+  sceneSource: "local", // "pexels" | "local" — which scenery is currently feeding
+  sceneActiveVideo: "a", // which A/B element is currently visible
+  sceneToken: 0, // bumped on category change / mode exit to cancel stale async work
+  sceneFetchInFlight: false,
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -72,6 +98,8 @@ const state = {
   pillDimTimer: 0,
   visualizerRaf: 0,
   visualizerPhase: 0,
+  visualizerRect: null,
+  visualizerResizeHandler: null,
   collection: null,
   collectionShuffle: false,
   collectionReturnView: "home",
@@ -129,6 +157,11 @@ const elements = {
   ambientVisualizerArt: document.querySelector("#ambientVisualizerArt"),
   ambientScreensaver: document.querySelector("#ambientScreensaver"),
   ambientVideo: document.querySelector("#ambientVideo"),
+  ambientVideoB: document.querySelector("#ambientVideoB"),
+  ambientSceneControls: document.querySelector("#ambientSceneControls"),
+  sceneCategoryBtn: document.querySelector("#sceneCategoryBtn"),
+  sceneCategoryLabel: document.querySelector("#sceneCategoryLabel"),
+  sceneSkipBtn: document.querySelector("#sceneSkipBtn"),
   ambientControls: document.querySelector("#ambientControls"),
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
@@ -165,6 +198,8 @@ const actions = {
   loadLibrary,
   loadDevices,
   setAmbientMode,
+  toggleSceneCategory,
+  skipSceneClip,
   playCollection,
   toggleCollectionShuffle,
   collectionBack,
@@ -332,6 +367,10 @@ function hydrateUiPreferences() {
     if (savedMode && AMBIENT_MODES.includes(savedMode)) {
       state.ambientMode = savedMode;
     }
+    const savedScene = localStorage.getItem(storageKeys.sceneCategory);
+    if (savedScene && SCENE_CATEGORIES.includes(savedScene)) {
+      state.sceneCategory = savedScene;
+    }
     const savedDebug = localStorage.getItem(storageKeys.debugVisible);
     state.debugVisible = savedDebug === "1";
   } catch {
@@ -341,6 +380,7 @@ function hydrateUiPreferences() {
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
+  reflectSceneCategory();
   elements.ambientControls?.classList.toggle("is-dim", state.ambientMode === "screensaver");
 }
 
@@ -2069,52 +2109,323 @@ function startBubbleCornerTimer() {
   }, 90000);
 }
 
-function syncAmbientVideo() {
-  const screensaver = elements.ambientScreensaver;
-  const video = elements.ambientVideo;
-  if (!screensaver || !video) return;
-  const shouldPlay = state.currentView === "ambient" && state.ambientMode === "screensaver";
-  if (!shouldPlay) {
-    try { video.pause(); } catch {}
-    return;
-  }
-  if (video.currentSrc && screensaver.dataset.video === "on") {
-    video.play().catch(() => {});
-  } else {
-    loadAmbientVideoAt(0);
+// === Scene (screensaver) playback =============================================
+// Scene runs an A/B pair of <video> elements so the next clip can preload while
+// the current one plays; we crossfade by toggling .ambient-screensaver[data-active]
+// (opacity only — TV-safe). Sources come from Pexels when a key is present, else
+// the bundled AMBIENT_VIDEOS loops. We advance manually (no reliance on loop) so
+// playback is perpetual and Skip can jump instantly.
+
+function hasPexelsKey() {
+  try {
+    return Boolean(window.__PEXELS_KEY__);
+  } catch {
+    return false;
   }
 }
 
-function loadAmbientVideoAt(index) {
+function sceneVideoEls() {
+  return { a: elements.ambientVideo, b: elements.ambientVideoB };
+}
+
+function activeSceneVideo() {
+  const { a, b } = sceneVideoEls();
+  return state.sceneActiveVideo === "b" ? b : a;
+}
+
+function inactiveSceneVideo() {
+  const { a, b } = sceneVideoEls();
+  return state.sceneActiveVideo === "b" ? a : b;
+}
+
+// Called by setAmbientMode + setView. Decides whether Scene should be running and
+// kicks off (or stops) playback. Stopping pauses both elements without tearing
+// down sources, so returning to Scene resumes quickly.
+function syncAmbientVideo() {
   const screensaver = elements.ambientScreensaver;
-  const video = elements.ambientVideo;
-  if (!screensaver || !video) return;
-  if (index >= AMBIENT_VIDEOS.length) {
-    // Every source failed — fall back to the generative drift scene.
-    screensaver.dataset.video = "off";
-    video.onerror = null;
-    video.oncanplay = null;
-    video.removeAttribute("src");
-    log("Ambient scenery: no video source loaded; using generative scene.");
+  const { a, b } = sceneVideoEls();
+  if (!screensaver || !a) return;
+  const shouldPlay = state.currentView === "ambient" && state.ambientMode === "screensaver";
+  if (!shouldPlay) {
+    // Bump the token so any in-flight fetch/load callbacks become no-ops.
+    state.sceneToken += 1;
+    try { a.pause(); } catch {}
+    try { b?.pause(); } catch {}
     return;
   }
-  state.videoIndex = index;
-  video.onerror = () => {
-    log(`Ambient video source failed: ${AMBIENT_VIDEOS[index]}`);
-    loadAmbientVideoAt(index + 1);
-  };
-  video.oncanplay = () => {
-    screensaver.dataset.video = "on";
-    log(`Ambient scenery playing: ${AMBIENT_VIDEOS[index]}`, "success");
-  };
-  screensaver.dataset.video = "off";
-  video.src = AMBIENT_VIDEOS[index];
-  video.load();
-  const playPromise = video.play();
-  if (playPromise && typeof playPromise.catch === "function") {
-    // Autoplay may defer until canplay; that's fine — oncanplay flips the scene on.
-    playPromise.catch(() => {});
+  // Already running with a visible clip — resume it. Re-arm the onended advance
+  // with a fresh token (the previous token was invalidated when Scene was paused).
+  if (screensaver.dataset.video === "on" && activeSceneVideo()?.currentSrc) {
+    const token = ++state.sceneToken;
+    const current = activeSceneVideo();
+    current.onended = () => {
+      if (token !== state.sceneToken) return;
+      advanceSceneClip(token);
+    };
+    current.play().catch(() => {});
+    return;
   }
+  startScenePlayback();
+}
+
+// Build (or rebuild) the in-memory playlist for the current category, then begin
+// playing the first clip. Pexels is attempted first; any failure falls back to
+// the bundled loops via beginLocalScene().
+function startScenePlayback() {
+  const token = ++state.sceneToken;
+  if (!hasPexelsKey()) {
+    log("Scene: no Pexels key present; using bundled ambient loops.");
+    beginLocalScene(token);
+    return;
+  }
+  if (state.sceneFetchInFlight) return;
+  state.sceneFetchInFlight = true;
+  fetchPexelsScene(state.sceneCategory, token)
+    .then((urls) => {
+      state.sceneFetchInFlight = false;
+      if (token !== state.sceneToken) return; // category changed / left Scene
+      if (!urls || !urls.length) {
+        log("Scene: Pexels returned no usable clips; using bundled loops.");
+        beginLocalScene(token);
+        return;
+      }
+      state.sceneSource = "pexels";
+      state.scenePlaylist = shuffleArray(urls);
+      state.scenePlaylistIndex = -1;
+      log(`Scene: loaded ${state.scenePlaylist.length} ${state.sceneCategory} clips from Pexels.`, "success");
+      advanceSceneClip(token);
+    })
+    .catch((error) => {
+      state.sceneFetchInFlight = false;
+      if (token !== state.sceneToken) return;
+      logError("Scene: Pexels fetch failed; using bundled loops", error);
+      beginLocalScene(token);
+    });
+}
+
+// Fallback path: the existing bundled loops become the playlist.
+function beginLocalScene(token) {
+  if (token !== state.sceneToken) return;
+  state.sceneSource = "local";
+  state.scenePlaylist = AMBIENT_VIDEOS.slice();
+  state.scenePlaylistIndex = -1;
+  advanceSceneClip(token);
+}
+
+// Load the next clip into the *inactive* video element, then crossfade. On a load
+// error we skip forward; if every clip in a local playlist fails we drop to the
+// generative drift scene (data-video="off"). For Pexels failures we retry within
+// the same list, and only if the whole list is exhausted do we fall back local.
+function advanceSceneClip(token, attempt = 0) {
+  if (token !== state.sceneToken) return;
+  const screensaver = elements.ambientScreensaver;
+  const playlist = state.scenePlaylist;
+  if (!screensaver || !playlist.length) return;
+
+  // Exhausted the list (all failed this pass) — degrade.
+  if (attempt >= playlist.length) {
+    if (state.sceneSource === "pexels") {
+      log("Scene: all Pexels clips failed to load; using bundled loops.");
+      beginLocalScene(token);
+    } else {
+      screensaver.dataset.video = "off";
+      log("Scene: no video source loaded; using generative scene.");
+    }
+    return;
+  }
+
+  state.scenePlaylistIndex = (state.scenePlaylistIndex + 1) % playlist.length;
+  const url = playlist[state.scenePlaylistIndex];
+  const next = inactiveSceneVideo();
+  if (!next) return;
+
+  next.onerror = null;
+  next.oncanplay = null;
+  next.onended = null;
+
+  next.onerror = () => {
+    if (token !== state.sceneToken) return;
+    next.onerror = null;
+    next.oncanplay = null;
+    log(`Scene clip failed to load: ${url}`);
+    advanceSceneClip(token, attempt + 1);
+  };
+  next.oncanplay = () => {
+    if (token !== state.sceneToken) return;
+    next.onerror = null;
+    next.oncanplay = null;
+    crossfadeToInactive(token);
+    // Perpetual play: advance when this clip finishes. We muted + manual-advance
+    // rather than loop so the next random clip always preloads.
+    next.onended = () => {
+      if (token !== state.sceneToken) return;
+      advanceSceneClip(token);
+    };
+    log(`Scene clip playing (${state.sceneSource}): ${url}`, "success");
+  };
+
+  next.src = url;
+  next.load();
+  const p = next.play();
+  if (p && typeof p.catch === "function") p.catch(() => {});
+}
+
+// Swap which A/B element is visible. The screensaver wrapper carries data-active
+// = "a" | "b"; CSS fades the matching element in via opacity. Pause the now-hidden
+// element so only one clip decodes at a time on the TV GPU.
+function crossfadeToInactive(token) {
+  if (token !== state.sceneToken) return;
+  const screensaver = elements.ambientScreensaver;
+  if (!screensaver) return;
+  const justLoaded = state.sceneActiveVideo === "b" ? "a" : "b";
+  const previous = activeSceneVideo();
+  state.sceneActiveVideo = justLoaded;
+  screensaver.dataset.active = justLoaded;
+  screensaver.dataset.video = "on";
+  // Pause the outgoing clip after the fade so it stops decoding.
+  if (previous) {
+    window.setTimeout(() => {
+      if (token !== state.sceneToken) return;
+      if (activeSceneVideo() !== previous) {
+        try { previous.pause(); } catch {}
+      }
+    }, 900);
+  }
+}
+
+// Skip control: jump to the next clip immediately (no waiting for the current one
+// to end). Reuses advanceSceneClip against the existing in-memory playlist.
+function skipSceneClip() {
+  if (state.ambientMode !== "screensaver") return;
+  if (!state.scenePlaylist.length) {
+    syncAmbientVideo();
+    return;
+  }
+  log("Scene: skip to next clip.");
+  advanceSceneClip(state.sceneToken);
+}
+
+// Toggle category, persist it, reflect the icon/label, and rebuild the playlist.
+function toggleSceneCategory() {
+  const idx = SCENE_CATEGORIES.indexOf(state.sceneCategory);
+  const safeIdx = idx < 0 ? 0 : idx;
+  state.sceneCategory = SCENE_CATEGORIES[(safeIdx + 1) % SCENE_CATEGORIES.length];
+  try {
+    localStorage.setItem(storageKeys.sceneCategory, state.sceneCategory);
+  } catch {}
+  reflectSceneCategory();
+  log(`Scene category set to ${SCENE_CATEGORY_LABELS[state.sceneCategory]}.`);
+  if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
+    // Cancel any in-flight load and start fresh for the new category.
+    startScenePlayback();
+  }
+}
+
+// Sync the toggle button's data-category (drives which SVG shows) + label + a11y.
+function reflectSceneCategory() {
+  const label = SCENE_CATEGORY_LABELS[state.sceneCategory] || "Nature";
+  if (elements.sceneCategoryBtn) {
+    elements.sceneCategoryBtn.dataset.category = state.sceneCategory;
+    elements.sceneCategoryBtn.setAttribute("aria-label", `Scene category: ${label}`);
+  }
+  if (elements.sceneCategoryLabel) {
+    elements.sceneCategoryLabel.textContent = label;
+  }
+}
+
+function shuffleArray(input) {
+  const arr = input.slice();
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// === Pexels API ===============================================================
+// Search one (random) query for the category and return a flat list of mp4 URLs.
+// Honors 429 with exponential backoff using the Retry-After header. Clips are kept
+// in memory only (callers store them on state); nothing is persisted.
+async function fetchPexelsScene(category, token) {
+  const key = window.__PEXELS_KEY__;
+  if (!key) return [];
+  const queries = SCENE_QUERIES[category] || SCENE_QUERIES.nature;
+  const query = queries[Math.floor(Math.random() * queries.length)];
+  const page = 1 + Math.floor(Math.random() * PEXELS_MAX_PAGE);
+  const url = `${PEXELS_VIDEO_SEARCH}?query=${encodeURIComponent(query)}`
+    + `&orientation=landscape&size=large&per_page=${PEXELS_PER_PAGE}&page=${page}`;
+
+  let attempt = 0;
+  while (attempt <= PEXELS_MAX_RETRIES) {
+    if (token !== state.sceneToken) return [];
+    let response;
+    try {
+      response = await fetch(url, {
+        // Pexels wants the RAW key in Authorization (no "Bearer " prefix).
+        headers: { Authorization: key },
+      });
+    } catch (networkError) {
+      // Network-level failure — let the caller fall back to local loops.
+      throw networkError;
+    }
+
+    if (response.status === 429) {
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      // Exponential backoff: prefer the server hint, else 2^attempt seconds.
+      const waitSec = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter
+        : Math.pow(2, attempt);
+      log(`Scene: Pexels rate-limited (429); backing off ${waitSec}s.`);
+      attempt += 1;
+      if (attempt > PEXELS_MAX_RETRIES) break;
+      await delay(waitSec * 1000);
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Pexels HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    return extractPexelsMp4s(data);
+  }
+  // Ran out of retries on 429.
+  throw new Error("Pexels rate limit retries exhausted");
+}
+
+// From a Pexels search payload, pick one good mp4 per video. Prefer ~1920 then
+// ~1280 wide hd clips; fall back to the widest mp4 available.
+function extractPexelsMp4s(data) {
+  const videos = Array.isArray(data?.videos) ? data.videos : [];
+  const urls = [];
+  for (const video of videos) {
+    const files = Array.isArray(video?.video_files) ? video.video_files : [];
+    const mp4s = files.filter((f) => f && f.file_type === "video/mp4" && f.link);
+    if (!mp4s.length) continue;
+    const pick = pickPreferredMp4(mp4s);
+    if (pick) urls.push(pick.link);
+  }
+  return urls;
+}
+
+function pickPreferredMp4(mp4s) {
+  // Score by closeness to 1920, then 1280; prefer "hd" quality; tie-break wider.
+  const scored = mp4s.map((f) => {
+    const width = Number(f.width) || 0;
+    let score;
+    if (width >= 1800 && width <= 2100) score = 0;        // ~full HD landscape
+    else if (width >= 1200 && width <= 1400) score = 1;   // ~HD landscape
+    else if (width > 2100) score = 2;                      // 4K — heavy on the TV
+    else score = 3;                                        // small/odd
+    if (f.quality === "hd") score -= 0.25;
+    return { file: f, score, width };
+  });
+  scored.sort((a, b) => (a.score - b.score) || (b.width - a.width));
+  return scored[0]?.file || null;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function startVisualizerIfNeeded() {
