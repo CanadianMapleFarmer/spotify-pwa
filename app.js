@@ -8,6 +8,8 @@ const SPOTIFY_SCOPES = [
   "user-modify-playback-state",
   "user-read-currently-playing",
   "playlist-read-private",
+  "playlist-modify-public",
+  "playlist-modify-private",
   "user-library-read",
   "user-top-read",
   "user-read-recently-played",
@@ -140,6 +142,12 @@ const state = {
   collectionReturnView: "home",
   dataLoaded: false,
   dataLoading: false,
+  queueItems: [], // last-fetched upcoming queue (from /me/player/queue)
+  queueReturnFocus: null,
+  trackMenuTrack: null, // track object the context menu is acting on
+  trackMenuReturnFocus: null,
+  userPlaylists: null, // cached editable playlists for the add-to-playlist picker
+  upNextTrackId: "", // nowPlaying id the up-next card was last shown for (once per song)
 };
 
 const elements = {
@@ -232,6 +240,17 @@ const elements = {
   exitDialog: document.querySelector("#exitDialog"),
   exitDialogCancel: document.querySelector("#exitDialogCancel"),
   exitDialogConfirm: document.querySelector("#exitDialogConfirm"),
+  queueDrawer: document.querySelector("#queueDrawer"),
+  queueList: document.querySelector("#queueList"),
+  trackMenu: document.querySelector("#trackMenu"),
+  trackMenuArt: document.querySelector("#trackMenuArt"),
+  trackMenuTitle: document.querySelector("#trackMenuTitle"),
+  trackMenuArtist: document.querySelector("#trackMenuArtist"),
+  trackMenuActions: document.querySelector("#trackMenuActions"),
+  upNext: document.querySelector("#upNext"),
+  upNextArt: document.querySelector("#upNextArt"),
+  upNextTitle: document.querySelector("#upNextTitle"),
+  upNextArtist: document.querySelector("#upNextArtist"),
 };
 
 const actions = {
@@ -272,6 +291,9 @@ const actions = {
   toggleSceneImageSequence,
   cancelExit,
   confirmExit,
+  openQueueDrawer,
+  closeQueueDrawer,
+  closeTrackMenu,
 };
 
 function init() {
@@ -480,6 +502,14 @@ function activeFocusables() {
   if (isExitDialogOpen()) {
     return Array.from(elements.exitDialog.querySelectorAll(".focusable:not([disabled])")).filter(isVisibleElement);
   }
+  // The track menu and queue drawer are modal too — trap the remote inside them
+  // so arrows can't escape to the view behind. Back closes (see handleBack).
+  if (isTrackMenuOpen()) {
+    return Array.from(elements.trackMenu.querySelectorAll(".focusable:not([disabled])")).filter(isVisibleElement);
+  }
+  if (isQueueDrawerOpen()) {
+    return Array.from(elements.queueDrawer.querySelectorAll(".focusable:not([disabled])")).filter(isVisibleElement);
+  }
   const roots = [];
   const nav = document.querySelector(".nav");
   if (nav) roots.push(nav);
@@ -659,19 +689,40 @@ function moveFocusDirectional(direction) {
   }
 }
 
+function isEditableTarget(node) {
+  const el = node instanceof HTMLElement ? node : null;
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
 function handleRemoteEvent(event) {
   const normalized = normalizeRemoteKey(event);
   logRemoteEvent(event, normalized);
   if (event.type !== "keydown") return;
 
+  // When a text field is focused, let the browser handle keys natively. Otherwise
+  // the numpad-digit→D-pad aliases (2/4/5/6/8) would hijack numeric typing and the
+  // arrows would navigate focus instead of moving the caret.
+  if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) {
+    return;
+  }
+
   switch (normalized) {
     case "ArrowRight":
       event.preventDefault();
+      // Right on a focused track row opens its context menu (Enter still plays it).
+      if (openTrackMenuFromFocus()) break;
       if (handleAmbientModeArrow("right")) break;
       if (!moveRailFocus("right")) moveFocusDirectional("right");
       break;
     case "ArrowDown":
       event.preventDefault();
+      if (isQueueDrawerOpen()) {
+        scrollQueueList("down");
+        break;
+      }
       if (isDiagnosticsOpen()) {
         scrollDiagnostics("down");
         break;
@@ -685,6 +736,10 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowUp":
       event.preventDefault();
+      if (isQueueDrawerOpen()) {
+        scrollQueueList("up");
+        break;
+      }
       if (isDiagnosticsOpen()) {
         scrollDiagnostics("up");
         break;
@@ -1159,12 +1214,19 @@ async function fetchCollectionTracks(item, type) {
 }
 
 function normalizeCollectionTrack(track) {
+  // Album-track responses are simplified (no nested album); playlist items carry
+  // a full track with album art and release date. image/album stay empty for albums.
+  const images = track.album?.images || [];
+  const releaseDate = track.album?.release_date || "";
   return {
     uri: track.uri || "",
     id: track.id || "",
     name: track.name || "Untitled",
     artist: (track.artists || []).map((artist) => artist.name).join(", "),
     duration: track.duration_ms || 0,
+    image: images[images.length - 1]?.url || images[0]?.url || "",
+    album: track.album?.name || "",
+    year: releaseDate ? releaseDate.slice(0, 4) : "",
   };
 }
 
@@ -1186,7 +1248,11 @@ function renderCollection() {
   if (elements.collectionMeta) {
     const count = coll.tracks.length || coll.totalKnown || 0;
     const countText = count ? `${count} song${count === 1 ? "" : "s"}` : "";
-    elements.collectionMeta.textContent = [coll.byline, countText].filter(Boolean).join(" · ");
+    const totalMs = coll.tracks.reduce((sum, track) => sum + (track.duration || 0), 0);
+    const durationText = totalMs ? formatTotalDuration(totalMs) : "";
+    elements.collectionMeta.textContent = [coll.byline, countText, durationText]
+      .filter(Boolean)
+      .join(" · ");
   }
   updateCollectionShuffleBtn();
 
@@ -1219,14 +1285,23 @@ function renderCollection() {
     const row = document.createElement("button");
     row.className = "focusable collection-track";
     row.dataset.uri = track.uri;
+    row.dataset.index = index;
+    // Playlists carry per-track art; albums share one cover, so show the track number.
+    const hasArt = Boolean(track.image);
+    const indexCell = hasArt
+      ? `<span class="collection-track__index collection-track__index--art" style="background-image:url('${escapeHtml(track.image)}')">
+           <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+         </span>`
+      : `<span class="collection-track__index">
+           <span class="collection-track__num">${index + 1}</span>
+           <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+         </span>`;
+    const subtitle = [track.artist, track.album].filter(Boolean).join(" · ");
     row.innerHTML = `
-      <span class="collection-track__index">
-        <span class="collection-track__num">${index + 1}</span>
-        <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
-      </span>
+      ${indexCell}
       <span class="collection-track__body">
         <span class="collection-track__title">${escapeHtml(track.name)}</span>
-        <span class="collection-track__artist">${escapeHtml(track.artist)}</span>
+        <span class="collection-track__artist">${escapeHtml(subtitle)}</span>
       </span>
       <span class="collection-track__time">${formatDuration(track.duration)}</span>
     `;
@@ -1324,6 +1399,15 @@ function handleBack() {
     cancelExit();
     return;
   }
+  // Modal overlays close on Back before any view navigation.
+  if (isTrackMenuOpen()) {
+    closeTrackMenu();
+    return;
+  }
+  if (isQueueDrawerOpen()) {
+    closeQueueDrawer();
+    return;
+  }
   // Debug overlay traps up/down for scrolling — Back closes it so the remote
   // isn't stuck unable to navigate the rest of the screen.
   if (isDiagnosticsOpen()) {
@@ -1395,6 +1479,332 @@ function confirmExit() {
     if (typeof window.Hisense_exitApp === "function") window.Hisense_exitApp();
   } catch {}
   try { window.close(); } catch {}
+}
+
+/* ------------------------------------------------------------------ *
+ * #49 Now Playing queue drawer
+ * ------------------------------------------------------------------ */
+
+function isQueueDrawerOpen() {
+  return Boolean(elements.queueDrawer) && !elements.queueDrawer.hidden;
+}
+
+async function openQueueDrawer() {
+  const drawer = elements.queueDrawer;
+  if (!drawer || isQueueDrawerOpen()) return;
+  state.queueReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  drawer.hidden = false;
+  drawer.classList.add("is-open");
+  renderQueueDrawer();
+  const close = drawer.querySelector(".queue-drawer__close");
+  if (close) focusElement(close);
+  log("Queue drawer opened.");
+  try {
+    await fetchQueueItems();
+    if (isQueueDrawerOpen()) renderQueueDrawer();
+  } catch (error) {
+    logError("Queue load failed", error);
+    if (isQueueDrawerOpen()) renderQueueDrawer(error?.message || "Couldn't load the queue.");
+  }
+}
+
+function closeQueueDrawer() {
+  const drawer = elements.queueDrawer;
+  if (!drawer || drawer.hidden) return;
+  drawer.classList.remove("is-open");
+  drawer.hidden = true;
+  const ret = state.queueReturnFocus;
+  state.queueReturnFocus = null;
+  if (ret && document.contains(ret)) focusElement(ret);
+  else {
+    const focusables = activeFocusables();
+    if (focusables.length) focusElement(focusables[0]);
+  }
+  log("Queue drawer closed.");
+}
+
+// VIDAA has no wheel — Up/Down scroll the queue list while the drawer is open.
+function scrollQueueList(direction) {
+  const list = elements.queueList;
+  if (!list) return;
+  const step = Math.max(120, list.clientHeight - 60);
+  try {
+    list.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
+  } catch {
+    list.scrollTop += direction === "down" ? step : -step;
+  }
+}
+
+function normalizeQueueTrack(item) {
+  const images = item?.album?.images || [];
+  return {
+    uri: item?.uri || "",
+    name: item?.name || "Untitled",
+    artist: (item?.artists || []).map((a) => a.name).join(", "),
+    image: images[images.length - 1]?.url || images[0]?.url || "",
+  };
+}
+
+async function fetchQueueItems() {
+  const data = await spotifyApiJson("/v1/me/player/queue");
+  const items = Array.isArray(data?.queue) ? data.queue : [];
+  state.queueItems = items.map(normalizeQueueTrack);
+  return state.queueItems;
+}
+
+function renderQueueDrawer(errorMessage) {
+  const list = elements.queueList;
+  if (!list) return;
+  list.replaceChildren();
+  if (errorMessage) {
+    const note = document.createElement("p");
+    note.className = "queue-drawer__note queue-drawer__note--error";
+    note.textContent = errorMessage;
+    list.append(note);
+    return;
+  }
+  const items = state.queueItems;
+  if (!items || !items.length) {
+    const note = document.createElement("p");
+    note.className = "queue-drawer__note";
+    note.textContent = "Nothing queued. Add tracks from a collection's ⋯ menu.";
+    list.append(note);
+    return;
+  }
+  items.forEach((track, index) => {
+    const row = document.createElement("div");
+    row.className = "queue-row";
+    row.setAttribute("role", "listitem");
+    const art = track.image ? `url("${escapeHtml(track.image)}")` : "none";
+    row.innerHTML = `
+      <span class="queue-row__art" style="background-image:${art}"></span>
+      <span class="queue-row__body">
+        <span class="queue-row__title">${escapeHtml(track.name)}</span>
+        <span class="queue-row__artist">${escapeHtml(track.artist)}</span>
+      </span>
+      <span class="queue-row__pos">${index + 1}</span>
+    `;
+    list.append(row);
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * #50 Track context menu (Add to Queue / Add to Playlist)
+ * ------------------------------------------------------------------ */
+
+function isTrackMenuOpen() {
+  return Boolean(elements.trackMenu) && !elements.trackMenu.hidden;
+}
+
+// If a Collection track row currently has focus, open its menu (Right arrow).
+function openTrackMenuFromFocus() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  const row = active.closest(".collection-track");
+  if (!row) return false;
+  const index = Number(row.dataset.index);
+  const track = state.collection?.tracks?.[index];
+  if (!track || !track.uri) return false;
+  openTrackMenu(track);
+  return true;
+}
+
+function openTrackMenu(track) {
+  const menu = elements.trackMenu;
+  if (!menu || isTrackMenuOpen()) return;
+  state.trackMenuTrack = track;
+  state.trackMenuReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (elements.trackMenuTitle) elements.trackMenuTitle.textContent = track.name || "Track";
+  if (elements.trackMenuArtist) elements.trackMenuArtist.textContent = track.artist || "";
+  if (elements.trackMenuArt) {
+    if (track.image) elements.trackMenuArt.src = track.image;
+    else elements.trackMenuArt.removeAttribute("src");
+  }
+  menu.hidden = false;
+  menu.classList.add("is-open");
+  renderTrackMenuRoot();
+  log(`Track menu opened: ${track.name}`);
+}
+
+function closeTrackMenu() {
+  const menu = elements.trackMenu;
+  if (!menu || menu.hidden) return;
+  menu.classList.remove("is-open");
+  menu.hidden = true;
+  const ret = state.trackMenuReturnFocus;
+  state.trackMenuTrack = null;
+  state.trackMenuReturnFocus = null;
+  if (ret && document.contains(ret)) focusElement(ret);
+  else {
+    const focusables = activeFocusables();
+    if (focusables.length) focusElement(focusables[0]);
+  }
+  log("Track menu closed.");
+}
+
+function trackMenuButton(label, onActivate, extraClass) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `focusable track-menu__action${extraClass ? " " + extraClass : ""}`;
+  btn.textContent = label;
+  btn.addEventListener("click", onActivate);
+  return btn;
+}
+
+function focusFirstActive() {
+  const focusables = activeFocusables();
+  if (focusables.length) focusElement(focusables[0]);
+}
+
+function renderTrackMenuRoot() {
+  const wrap = elements.trackMenuActions;
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const track = state.trackMenuTrack;
+  if (!track) return;
+  wrap.append(trackMenuButton("Add to Queue", () => {
+    addTrackToQueue(track).catch((error) => {
+      logError("Add to queue failed", error);
+      showToast("Couldn't add to the queue.", "error");
+    });
+  }));
+  wrap.append(trackMenuButton("Add to Playlist…", () => {
+    openPlaylistPicker(track).catch((error) => logError("Playlist picker failed", error));
+  }));
+  focusFirstActive();
+}
+
+async function addTrackToQueue(track) {
+  if (!track?.uri) return;
+  await ensureSpotifyDeviceReady();
+  const response = await spotifyApiFetch(
+    withDeviceIdParam(`/v1/me/player/queue?uri=${encodeURIComponent(track.uri)}`),
+    { method: "POST" }
+  );
+  if (!response.ok) {
+    throw new Error(`Add to queue failed (${response.status}): ${await readSpotifyError(response)}`);
+  }
+  showToast(`Added "${track.name}" to the queue.`, "success");
+  log(`Queued ${track.name}.`, "success");
+  closeTrackMenu();
+}
+
+// Editable = owned by the current user, or collaborative. Cached after first load.
+async function ensureUserPlaylists() {
+  if (Array.isArray(state.userPlaylists)) return state.userPlaylists;
+  const [me, data] = await Promise.all([
+    spotifyApiJson("/v1/me"),
+    spotifyApiJson("/v1/me/playlists?limit=50"),
+  ]);
+  const userId = me?.id || "";
+  const all = Array.isArray(data?.items) ? data.items : [];
+  state.userPlaylists = all
+    .filter((p) => p && p.id && (p.collaborative || (userId && p.owner?.id === userId)))
+    .map((p) => ({ id: p.id, name: p.name || "Untitled" }));
+  return state.userPlaylists;
+}
+
+async function openPlaylistPicker(track) {
+  const wrap = elements.trackMenuActions;
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "track-menu__note";
+  loading.textContent = "Loading your playlists…";
+  wrap.append(loading);
+  let playlists = [];
+  try {
+    playlists = await ensureUserPlaylists();
+  } catch (error) {
+    logError("Load playlists failed", error);
+    if (!isTrackMenuOpen()) return;
+    wrap.replaceChildren();
+    wrap.append(trackMenuButton("‹ Back", renderTrackMenuRoot, "track-menu__action--ghost"));
+    const note = document.createElement("p");
+    note.className = "track-menu__note track-menu__note--error";
+    note.textContent = "Couldn't load playlists.";
+    wrap.append(note);
+    focusFirstActive();
+    return;
+  }
+  if (!isTrackMenuOpen()) return;
+  wrap.replaceChildren();
+  wrap.append(trackMenuButton("‹ Back", renderTrackMenuRoot, "track-menu__action--ghost"));
+  if (!playlists.length) {
+    const note = document.createElement("p");
+    note.className = "track-menu__note";
+    note.textContent = "No editable playlists found.";
+    wrap.append(note);
+  } else {
+    playlists.forEach((pl) => {
+      wrap.append(trackMenuButton(pl.name, () => {
+        addTrackToPlaylist(pl, track).catch((error) => {
+          logError("Add to playlist failed", error);
+          showToast("Couldn't add to that playlist.", "error");
+        });
+      }));
+    });
+  }
+  focusFirstActive();
+}
+
+async function addTrackToPlaylist(playlist, track) {
+  if (!playlist?.id || !track?.uri) return;
+  const response = await spotifyApiFetch(`/v1/playlists/${playlist.id}/tracks`, {
+    method: "POST",
+    body: JSON.stringify({ uris: [track.uri] }),
+  });
+  if (!response.ok) {
+    throw new Error(`Add to playlist failed (${response.status}): ${await readSpotifyError(response)}`);
+  }
+  showToast(`Added "${track.name}" to ${playlist.name}.`, "success");
+  log(`Added ${track.name} to playlist ${playlist.name}.`, "success");
+  closeTrackMenu();
+}
+
+/* ------------------------------------------------------------------ *
+ * #51 Up-next preview (final ~12s of a song)
+ * ------------------------------------------------------------------ */
+
+const UP_NEXT_WINDOW_MS = 12000;
+
+function maybeUpdateUpNext(position, now) {
+  if (!now || now.paused) { hideUpNext(); return; }
+  const remaining = (now.duration || 0) - position;
+  const inWindow = now.duration > 0 && remaining > 0 && remaining <= UP_NEXT_WINDOW_MS;
+  const showHere = state.currentView === "now" || state.currentView === "ambient";
+  if (!inWindow || !showHere) { hideUpNext(); return; }
+  // Fetch the queue once when we first enter this song's final window.
+  if (state.upNextTrackId !== now.id) {
+    state.upNextTrackId = now.id;
+    fetchQueueItems()
+      .then(() => { if (state.upNextTrackId === now.id) showUpNextCard(); })
+      .catch((error) => logError("Up-next queue fetch failed", error));
+    return;
+  }
+  showUpNextCard();
+}
+
+function showUpNextCard() {
+  const card = elements.upNext;
+  if (!card) return;
+  const next = state.queueItems?.[0];
+  if (!next) { hideUpNext(); return; }
+  if (elements.upNextTitle) elements.upNextTitle.textContent = next.name;
+  if (elements.upNextArtist) elements.upNextArtist.textContent = next.artist;
+  if (elements.upNextArt) {
+    if (next.image) elements.upNextArt.src = next.image;
+    else elements.upNextArt.removeAttribute("src");
+  }
+  card.hidden = false;
+  card.classList.add("is-visible");
+}
+
+function hideUpNext() {
+  const card = elements.upNext;
+  if (!card || card.hidden) return;
+  card.classList.remove("is-visible");
+  card.hidden = true;
 }
 
 function withDeviceIdParam(path) {
@@ -2211,6 +2621,7 @@ function renderProgress() {
   if (elements.sceneNpTime) {
     elements.sceneNpTime.textContent = timeText;
   }
+  maybeUpdateUpNext(position, now);
 }
 
 function renderAmbient() {
@@ -2690,7 +3101,7 @@ function stopImageSequence() {
   }
 }
 
-async function playImageSequence(clip, tokenRef) {
+async function playImageSequence(clip, token) {
   stopImageSequence();
   const img = elements.ambientImgSeq;
   if (!img || !clip || !clip.frames?.length) throw new Error("No frames");
@@ -2704,7 +3115,7 @@ async function playImageSequence(clip, tokenRef) {
     probe.onerror = resolve;
     probe.src = url;
   })));
-  if (tokenRef.cancelled) return;
+  if (state.sceneToken !== token) return;
 
   // Mark the screensaver as imgseq-mode so CSS hides the <video> elements and
   // shows the <img>. setSceneStripStatus advertises which path is live.
@@ -2715,7 +3126,7 @@ async function playImageSequence(clip, tokenRef) {
   let i = 0;
   img.src = clip.frames[0];
   state.sceneImageTimer = window.setInterval(() => {
-    if (tokenRef.cancelled) { stopImageSequence(); return; }
+    if (state.sceneToken !== token) { stopImageSequence(); return; }
     i = (i + 1) % clip.frames.length;
     img.src = clip.frames[i];
   }, interval);
@@ -2778,19 +3189,14 @@ async function startImageSequencePlayback() {
   const screensaver = elements.ambientScreensaver;
   if (!screensaver) return;
 
-  // Stale-cancel guard: if user leaves Scene mid-load, we drop everything.
-  const tokenRef = { cancelled: false };
-  const watcher = window.setInterval(() => {
-    if (state.sceneToken !== token) { tokenRef.cancelled = true; window.clearInterval(watcher); }
-  }, 500);
-
+  // Stale-cancel guard: any token bump (leaving Scene, category change, recursion)
+  // makes this run a no-op at the next checkpoint — no polling watcher needed.
   try {
     setSceneStripStatus("strip", "loading library…");
     const library = await loadSceneLibrary();
-    if (tokenRef.cancelled) return;
+    if (state.sceneToken !== token) return;
     const clip = pickLibraryClip(library);
     if (!clip) {
-      window.clearInterval(watcher);
       log("Scene: image-sequence library is empty; falling back to <video>.", "warn");
       showToast("Scene library empty. Deploy the function or use video mode.", "warn");
       setSceneStripStatus("plain", "library empty");
@@ -2799,18 +3205,18 @@ async function startImageSequencePlayback() {
       startScenePlayback();
       return;
     }
-    await playImageSequence(clip, tokenRef);
+    await playImageSequence(clip, token);
 
     // When this clip's frames have cycled a few times, advance to another one.
     // Random advance keeps it feeling like the old multi-clip rotation.
     const cycleMs = (clip.frames.length / (clip.fps || 10)) * 1000;
     window.setTimeout(() => {
-      if (tokenRef.cancelled) return;
+      if (state.sceneToken !== token) return;
       // Recurse to pick a new random clip.
       startImageSequencePlayback();
     }, Math.max(8000, cycleMs * 2));
   } catch (err) {
-    window.clearInterval(watcher);
+    if (state.sceneToken !== token) return;
     log(`Scene image-sequence failed: ${err?.message || err}; falling back.`, "warn");
     showToast(`Scene library load failed: ${err?.message || err}`, "warn");
     setSceneStripStatus("error", err?.message);
@@ -3268,6 +3674,15 @@ function formatDuration(ms) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+// Human-readable total for a collection header, e.g. "1 hr 23 min" / "47 min".
+function formatTotalDuration(ms) {
+  const totalMinutes = Math.round(Math.max(0, ms) / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return `${hours} hr${minutes ? ` ${minutes} min` : ""}`;
+  return `${minutes} min`;
 }
 
 function renderFacts(container, facts) {

@@ -833,6 +833,13 @@ body[data-view="ambient"] .app {
 }
 
 .ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room {
+  /* Fallback first: old VIDAA Blink can't parse color-mix() and drops the whole
+     declaration, so without this the panel would render flat near-black. The
+     rgba tints match the default green/blue accents used in this no-artwork state. */
+  background:
+    radial-gradient(circle at 30% 24%, rgba(30, 215, 96, 0.28), transparent 46%),
+    radial-gradient(circle at 74% 78%, rgba(112, 166, 255, 0.24), transparent 48%),
+    #06080e;
   background:
     radial-gradient(circle at 30% 24%, color-mix(in oklab, var(--ambient-accent-a) 28%, transparent), transparent 46%),
     radial-gradient(circle at 74% 78%, color-mix(in oklab, var(--ambient-accent-b) 24%, transparent), transparent 48%),
@@ -867,6 +874,11 @@ body[data-view="ambient"] .app {
 
 /* === Screensaver mode === */
 .ambient-screensaver {
+  /* Fallback first (see .ambient-room note): keeps a tinted wash on TV Blink. */
+  background:
+    radial-gradient(circle at 20% 80%, rgba(112, 166, 255, 0.26) 0%, transparent 42%),
+    radial-gradient(circle at 80% 20%, rgba(30, 215, 96, 0.22) 0%, transparent 42%),
+    #04060b;
   background:
     radial-gradient(circle at 20% 80%, color-mix(in oklab, var(--ambient-accent-b) 26%, transparent) 0%, transparent 42%),
     radial-gradient(circle at 80% 20%, color-mix(in oklab, var(--ambient-accent-a) 22%, transparent) 0%, transparent 42%),
@@ -925,6 +937,8 @@ body[data-view="ambient"] .app {
 
 .ambient-stage[data-mode="screensaver"]:not(.has-artwork) .drift {
   background-image: none;
+  /* Fallback first (see .ambient-room note). */
+  background: linear-gradient(135deg, rgba(30, 215, 96, 0.5), rgba(112, 166, 255, 0.5));
   background: linear-gradient(135deg,
     color-mix(in oklab, var(--ambient-accent-a) 50%, transparent),
     color-mix(in oklab, var(--ambient-accent-b) 50%, transparent));
@@ -1169,6 +1183,9 @@ body.debug-on .scene-np__status {
   margin: 0;
   font-family: var(--font-display);
   letter-spacing: 0.32em;
+  /* Fallback first: a light green approximating green mixed 64% with white, so
+     the eyebrow stays legible where color-mix() is unsupported (TV Blink). */
+  color: #8fe7ad;
   color: color-mix(in oklab, var(--ambient-accent-a) 64%, white);
 }
 
@@ -1281,11 +1298,6 @@ body.debug-on .scene-np__status {
 button.is-active {
   background: var(--green);
   color: #07100a;
-}
-
-.diagnostics {
-  margin-top: 28px;
-  padding: 18px;
 }
 
 .panel-heading {
@@ -1781,11 +1793,6 @@ body.debug-on .diagnostics {
 
 body.debug-on .diagnostics .log {
   max-height: none;
-}
-
-body.debug-on .ambient-view .diagnostics,
-body.debug-on .ambient-view ~ .diagnostics {
-  /* keep overlay visible even in ambient */
 }
 
 /* === Phone pair-auth screen (mobile-first, capped on larger displays) === */
@@ -2608,6 +2615,24 @@ body.is-phone-pair {
   50%      { transform: scaleY(1); }
 }
 
+/* Playlists carry per-track art, so the index cell becomes a 48px thumbnail with
+   the eq bars overlaid (with a scrim) while that track plays. */
+.collection-track__index--art {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background-color: #111824;
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+.collection-track__index--art .collection-track__eq {
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(4, 6, 10, 0.55);
+}
+
 .collection-track__body {
   display: flex;
   flex-direction: column;
@@ -2812,6 +2837,376 @@ body.is-phone-pair {
   margin-top: 18px;
 }
 
+/* === #49 Now-view Queue button ===
+   Secondary pill under the transport row that opens the queue drawer. */
+.now-queue-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  min-height: 52px;
+  padding: 12px 24px;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  background: rgba(12, 16, 24, 0.6);
+  color: #e8ecf1;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.now-queue-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* === #49 Queue drawer ===
+   Right-anchored sheet. Solid scrim (no large backdrop blur — blocky on TV Blink).
+   Rows are display-only: the Web API has no "jump to queue index N". */
+.queue-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+}
+
+.queue-drawer[hidden] {
+  display: none;
+}
+
+.queue-drawer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.74);
+  animation: queue-fade 200ms ease both;
+}
+
+.queue-drawer__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 92vw);
+  padding: 32px 32px 24px;
+  border-left: 1px solid var(--line);
+  background: var(--panel-strong, #11161f);
+  box-shadow: var(--elev-2);
+  /* Compositor-only entrance for the TV GPU. */
+  animation: queue-slide 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.queue-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.queue-drawer__head .eyebrow {
+  margin: 0;
+}
+
+.queue-drawer__close {
+  min-height: 48px;
+  padding: 10px 22px;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8ecf1;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.queue-drawer__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+  /* Keep focus/scroll off the very edges; matches .focusable scroll-margin. */
+  scroll-padding: 12px 0;
+}
+
+.queue-drawer__note {
+  margin: 0;
+  padding: 24px 4px;
+  color: var(--text-muted);
+  font-size: 1.04rem;
+}
+
+.queue-drawer__note--error {
+  color: var(--warn);
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.queue-row__art {
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  background-color: #111824;
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+.queue-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queue-row__title {
+  overflow: hidden;
+  font-size: 1.1rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.queue-row__artist {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.96rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.queue-row__pos {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
+}
+
+@keyframes queue-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes queue-slide {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* === #50 Track context menu ===
+   Centered focus-trapped sheet (root step + playlist-picker step). */
+.track-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(28px, 4vw, 80px);
+}
+
+.track-menu[hidden] {
+  display: none;
+}
+
+.track-menu__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.74);
+  animation: queue-fade 200ms ease both;
+}
+
+.track-menu__panel {
+  position: relative;
+  width: min(460px, 100%);
+  max-height: 80vh;
+  padding: 28px 28px 22px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-strong, #11161f);
+  box-shadow: var(--elev-2);
+  animation: exit-pop 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  overflow-y: auto;
+}
+
+.track-menu__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.track-menu__art {
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111824;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+.track-menu__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.track-menu__meta {
+  min-width: 0;
+}
+
+.track-menu__title {
+  margin: 0 0 4px;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.track-menu__artist {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 1rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.track-menu__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.track-menu__action {
+  width: 100%;
+  min-height: 58px;
+  padding: 14px 20px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8ecf1;
+  font-family: var(--font-body);
+  font-size: 1.1rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.track-menu__action--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.track-menu__note {
+  margin: 4px 0 0;
+  padding: 8px 4px;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.track-menu__note--error {
+  color: var(--warn);
+}
+
+/* === #51 Up-next preview ===
+   Non-interactive card, bottom-left, fades/slides in during a song's final ~12s.
+   Never focusable, so it can't perturb spatial focus or ambient scroll. */
+.up-next {
+  position: fixed;
+  left: clamp(20px, 3vw, 48px);
+  bottom: clamp(20px, 3vw, 48px);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(420px, calc(100vw - 48px));
+  padding: 14px 20px 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong, #11161f);
+  box-shadow: var(--elev-2);
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 320ms ease, transform 320ms ease;
+  pointer-events: none;
+}
+
+.up-next[hidden] {
+  display: none;
+}
+
+.up-next.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+body.has-pill .up-next {
+  bottom: clamp(96px, 9vw, 128px);
+}
+
+.up-next__art {
+  flex-shrink: 0;
+  width: 60px;
+  height: 60px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111824;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+.up-next__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.up-next__meta {
+  min-width: 0;
+}
+
+.up-next__eyebrow {
+  margin: 0 0 4px;
+  color: #9eddb5;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.up-next__title {
+  margin: 0 0 2px;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 1.12rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.up-next__artist {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.96rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* === prefers-reduced-motion guard === */
 @media (prefers-reduced-motion: reduce) {
   .aurora,
@@ -2839,6 +3234,18 @@ body.is-phone-pair {
   }
 
   .now-backdrop { transform: none; }
+
+  .queue-drawer__backdrop,
+  .queue-drawer__panel,
+  .track-menu__backdrop,
+  .track-menu__panel {
+    animation: none !important;
+  }
+
+  .up-next {
+    transition: opacity 120ms linear !important;
+    transform: none !important;
+  }
 
   html { scroll-behavior: auto; }
 }

@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=37">
+    <link rel="stylesheet" href="/styles.css?v=38">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -178,6 +178,10 @@
                 <span class="transport-btn__badge" aria-hidden="true">1</span>
               </button>
             </div>
+            <button class="focusable now-queue-btn" data-action="openQueueDrawer" aria-label="Show the play queue">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h13v2H3V6zm0 5h13v2H3v-2zm0 5h9v2H3v-2zm15-6l4 3-4 3v-6z"/></svg>
+              <span>Queue</span>
+            </button>
           </div>
         </div>
       </section>
@@ -469,6 +473,49 @@
       </div>
     </div>
 
+    <!-- Now Playing queue drawer: slides in from the right, focus-trapped while
+         open (Up/Down moves through rows, Back closes). Read-only list — the
+         Spotify Web API has no "jump to queue position N", so rows don't act. -->
+    <aside class="queue-drawer" id="queueDrawer" role="dialog" aria-modal="true" aria-label="Play queue" hidden>
+      <div class="queue-drawer__backdrop" data-action="closeQueueDrawer" aria-hidden="true"></div>
+      <div class="queue-drawer__panel" role="document">
+        <header class="queue-drawer__head">
+          <p class="eyebrow">Up Next</p>
+          <button class="focusable queue-drawer__close" data-action="closeQueueDrawer" aria-label="Close queue">Close</button>
+        </header>
+        <div class="queue-drawer__list" id="queueList" role="list"></div>
+      </div>
+    </aside>
+
+    <!-- Track context menu: opened by pressing Right on a focused Collection
+         track row (Enter still plays). Focus-trapped sheet; Back/Left closes.
+         Actions render dynamically (root step + playlist-picker step). -->
+    <div class="track-menu" id="trackMenu" role="dialog" aria-modal="true" aria-label="Track options" hidden>
+      <div class="track-menu__backdrop" data-action="closeTrackMenu" aria-hidden="true"></div>
+      <div class="track-menu__panel" role="document">
+        <div class="track-menu__head">
+          <span class="track-menu__art"><img id="trackMenuArt" alt=""></span>
+          <div class="track-menu__meta">
+            <p class="track-menu__title" id="trackMenuTitle">Track</p>
+            <p class="track-menu__artist" id="trackMenuArtist"></p>
+          </div>
+        </div>
+        <div class="track-menu__actions" id="trackMenuActions" role="list"></div>
+      </div>
+    </div>
+
+    <!-- Up-next preview: fades in during the final ~12s of a song on Now Playing
+         and Ambient. Non-interactive, position:fixed, never focusable — so it
+         can't perturb spatial focus or the ambient scroll. -->
+    <aside class="up-next" id="upNext" hidden aria-hidden="true">
+      <span class="up-next__art"><img id="upNextArt" alt=""></span>
+      <div class="up-next__meta">
+        <p class="up-next__eyebrow">Up Next</p>
+        <p class="up-next__title" id="upNextTitle"></p>
+        <p class="up-next__artist" id="upNextArtist"></p>
+      </div>
+    </aside>
+
     <!-- Firebase SDK + project config served from Hosting's reserved namespace.
          Auto-initializes window.firebase / firebase.firestore() — no API key in source.
          Requires Firestore to be enabled on the Firebase project. -->
@@ -480,6 +527,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=37" type="module"></script>
+    <script src="/app.js?v=38" type="module"></script>
   </body>
 </html>
