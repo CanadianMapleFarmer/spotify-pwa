@@ -1,4 +1,4 @@
-const CACHE_NAME = "spotify-tv-v35";
+const CACHE_NAME = "spotify-tv-v36";
 const ASSETS = [
   "/",
   "/index.html",
@@ -41,7 +41,9 @@ self.addEventListener("fetch", (event) => {
 
   if (isShell) {
     event.respondWith(
-      fetch(request)
+      // `no-store` makes network-first actually hit the network instead of a
+      // possibly-stale HTTP-cached shell, so fresh code always wins online.
+      fetch(request, { cache: "no-store" })
         .then((response) => {
           const copy = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
