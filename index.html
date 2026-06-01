@@ -12,6 +12,26 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
     <link rel="stylesheet" href="/styles.css?v=40">
     <meta http-equiv="Cache-Control" content="no-store">
+    <script>
+      // Bootstraps the service worker independently of app.js. If the module
+      // bundle ever fails to parse, this still runs so the SW can update and
+      // self-heal instead of serving a broken precache forever.
+      (function () {
+        if (!("serviceWorker" in navigator)) return;
+        var reloaded = false;
+        navigator.serviceWorker.addEventListener("controllerchange", function () {
+          if (reloaded) return;
+          reloaded = true;
+          window.location.reload();
+        });
+        window.addEventListener("load", function () {
+          navigator.serviceWorker
+            .register("/service-worker.js")
+            .then(function (reg) { reg.update(); })
+            .catch(function () {});
+        });
+      })();
+    </script>
   </head>
   <body>
     <div class="ambient-bg" id="ambientBg"></div>
@@ -531,6 +551,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=41" type="module"></script>
+    <script src="/app.js?v=42" type="module"></script>
   </body>
 </html>

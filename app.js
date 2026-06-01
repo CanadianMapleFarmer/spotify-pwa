@@ -366,7 +366,6 @@ function init() {
   });
 
   hydrateUiPreferences();
-  registerServiceWorker();
   runDeviceChecks();
   renderPairInfo();
   renderShellState();
@@ -4013,16 +4012,6 @@ function storageAvailable() {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) return;
-  try {
-    await navigator.serviceWorker.register("/service-worker.js");
-    log("Service worker registered.", "success");
-  } catch (error) {
-    logError("Service worker registration failed", error);
   }
 }
 
