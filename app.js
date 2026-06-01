@@ -649,8 +649,21 @@ function handleClick(event) {
   if (!button) return;
   const action = actions[button.dataset.action];
   if (!action) return;
+  // Hand the action the resolved [data-action] element as currentTarget/target.
+  // This is a delegated click, so event.target is the deepest child (e.g. the
+  // pill's artwork) which carries no data-* attrs — setView/setAmbientMode read
+  // their dataset, so a mouse click on a child mis-routed (fell back to "home").
+  // The TV path (activeElement.click()) targets the button directly, which is
+  // why this only broke in a desktop browser.
+  const actionEvent = {
+    currentTarget: button,
+    target: button,
+    originalEvent: event,
+    preventDefault: () => event.preventDefault(),
+    stopPropagation: () => event.stopPropagation(),
+  };
   try {
-    const result = action(event);
+    const result = action(actionEvent);
     if (result && typeof result.catch === "function") {
       result.catch((error) => logError(`${button.dataset.action} failed`, error));
     }
