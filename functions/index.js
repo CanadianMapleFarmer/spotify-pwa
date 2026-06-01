@@ -45,7 +45,7 @@ const STORAGE_PREFIX = "scene-frames";
 const COLLECTION = "sceneClips";
 
 // How many clips to keep per category. The Scene UI cycles through them randomly.
-const TARGET_PER_CATEGORY = 6;
+const TARGET_PER_CATEGORY = 10;
 const CATEGORIES = {
   nature: "nature landscape mountain forest",
   skyline: "city skyline urban night",
