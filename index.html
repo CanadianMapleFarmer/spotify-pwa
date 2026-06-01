@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=32">
+    <link rel="stylesheet" href="/styles.css?v=33">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -227,9 +227,8 @@
             <span class="drift drift--b" id="ambientDriftB"></span>
             <span class="drift drift--c" id="ambientDriftC"></span>
             <span class="drift drift--d" id="ambientDriftD"></span>
-            <!-- Scene now-playing card: art + meta + progress + transport. Floats over
-                 the video so users can read what's playing and skip/pause without
-                 leaving Scene. Lives inside the screensaver so it only renders here. -->
+            <!-- Scene now-playing card: art + meta + progress. Info-only — transport
+                 lives on the ambient screen so we don't duplicate controls. -->
             <aside class="scene-np" id="sceneNp" aria-label="Now playing">
               <div class="scene-np__row">
                 <span class="scene-np__art">
@@ -243,17 +242,6 @@
               <div class="scene-np__progress" aria-hidden="true">
                 <span class="scene-np__track"><span class="scene-np__fill" id="sceneNpProgressFill"></span></span>
                 <span class="scene-np__time" id="sceneNpTime">0:00 / 0:00</span>
-              </div>
-              <div class="scene-np__controls">
-                <button class="focusable scene-np__btn" data-action="previousTrack" aria-label="Previous track">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-                </button>
-                <button class="focusable scene-np__btn scene-np__btn--primary" data-action="toggleSpotifyPlayback" aria-label="Play or pause" id="sceneNpPlayBtn">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-                </button>
-                <button class="focusable scene-np__btn" data-action="nextTrack" aria-label="Next track">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
-                </button>
               </div>
             </aside>
           </div>
@@ -373,6 +361,16 @@
         </div>
 
         <div class="settings-section">
+          <p class="eyebrow">Ambient</p>
+          <h3 class="settings-section__title">Scene playback</h3>
+          <button class="focusable settings-toggle" id="toggleSceneStrip" data-action="toggleSceneStripAudio" role="switch" aria-checked="true">
+            <span class="settings-toggle__label">Strip audio from Scene clips (experimental)</span>
+            <span class="settings-toggle__hint">Demux Pexels MP4s in-browser so the TV's audio decoder never sees a competing track and Spotify can keep playing while the scene plays. If clips fail to load on your TV, turn this off to use the original URL.</span>
+            <span class="settings-toggle__state" id="toggleSceneStripState">On</span>
+          </button>
+        </div>
+
+        <div class="settings-section">
           <p class="eyebrow">Developer</p>
           <h3 class="settings-section__title">Debug</h3>
           <button class="focusable settings-toggle" id="toggleDebugView" data-action="toggleDebugView" role="switch" aria-checked="false">
@@ -464,6 +462,10 @@
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
     <script src="/pexels-config.js?v=1"></script>
-    <script src="/app.js?v=32" type="module"></script>
+    <!-- mp4box.js: demuxes MP4s in-browser so we can feed only the video track
+         to MediaSource and skip the audio decoder entirely. Used to strip audio
+         from Pexels scene clips so they coexist with Spotify on the TV. -->
+    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
+    <script src="/app.js?v=33" type="module"></script>
   </body>
 </html>

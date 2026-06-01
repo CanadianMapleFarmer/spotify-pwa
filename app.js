@@ -24,6 +24,7 @@ const storageKeys = {
   debugVisible: "spotify-pwa.debug-visible",
   ambientMode: "spotify-pwa.ambient-mode",
   sceneCategory: "spotify-pwa.scene-category",
+  sceneStripAudio: "spotify-pwa.scene-strip-audio",
 };
 
 const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
@@ -91,6 +92,8 @@ const state = {
   sceneActiveVideo: "a", // which A/B element is currently visible
   sceneToken: 0, // bumped on category change / mode exit to cancel stale async work
   sceneFetchInFlight: false,
+  sceneStripAudio: true, // experimental: strip audio from Pexels MP4s via mp4box
+  sceneStripBlobs: [], // Object URLs to revoke when leaving Scene
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -153,7 +156,6 @@ const elements = {
   sceneNpArtist: document.querySelector("#sceneNpArtist"),
   sceneNpProgressFill: document.querySelector("#sceneNpProgressFill"),
   sceneNpTime: document.querySelector("#sceneNpTime"),
-  sceneNpPlayBtn: document.querySelector("#sceneNpPlayBtn"),
   ambientDriftA: document.querySelector("#ambientDriftA"),
   ambientDriftB: document.querySelector("#ambientDriftB"),
   ambientDriftC: document.querySelector("#ambientDriftC"),
@@ -232,6 +234,7 @@ const actions = {
   resetSpotify,
   clearLog,
   toggleDebugView,
+  toggleSceneStripAudio,
   cancelExit,
   confirmExit,
 };
@@ -382,10 +385,14 @@ function hydrateUiPreferences() {
     }
     const savedDebug = localStorage.getItem(storageKeys.debugVisible);
     state.debugVisible = savedDebug === "1";
+    const savedStrip = localStorage.getItem(storageKeys.sceneStripAudio);
+    // Default ON (experimental) so the user can flip it off if it misbehaves.
+    state.sceneStripAudio = savedStrip === null ? true : savedStrip === "1";
   } catch {
     // localStorage unavailable; defaults already set
   }
   applyDebugVisibility();
+  applySceneStripState();
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
@@ -2246,6 +2253,27 @@ function toggleDebugView() {
   log(`Debug view ${state.debugVisible ? "enabled" : "disabled"}.`);
 }
 
+function toggleSceneStripAudio() {
+  state.sceneStripAudio = !state.sceneStripAudio;
+  try {
+    localStorage.setItem(storageKeys.sceneStripAudio, state.sceneStripAudio ? "1" : "0");
+  } catch {}
+  applySceneStripState();
+  log(`Scene audio strip ${state.sceneStripAudio ? "enabled" : "disabled"}.`);
+  // If Scene is currently running, restart so the change takes effect on the
+  // next clip rather than only after the user toggles modes.
+  if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
+    startScenePlayback();
+  }
+}
+
+function applySceneStripState() {
+  const btn = document.getElementById("toggleSceneStrip");
+  const label = document.getElementById("toggleSceneStripState");
+  if (btn) btn.setAttribute("aria-checked", state.sceneStripAudio ? "true" : "false");
+  if (label) label.textContent = state.sceneStripAudio ? "On" : "Off";
+}
+
 function applyDebugVisibility() {
   document.body.classList.toggle("debug-on", state.debugVisible);
   if (elements.diagnostics) {
@@ -2285,27 +2313,10 @@ function hasPexelsKey() {
   }
 }
 
-// VIDAA/Hisense's audio focus is greedy: when a Pexels clip's audio track enters
-// the pipeline (even muted) it can steal focus from the Spotify SDK and pause it.
-// We can't strip the audio track of a remote MP4 at runtime, so when we start a
-// Scene clip while Spotify was playing, we ask the SDK to resume() shortly after.
-// Two attempts cover the race where the first resume() loses to the focus-grab.
-function nudgeSpotifyResume() {
-  // Only nudge if Spotify was actively playing right before the clip started.
-  // state.nowPlaying.paused is updated by the SDK's player_state_changed listener.
-  const wasPlaying = state.nowPlaying && !state.nowPlaying.paused;
-  if (!wasPlaying) return;
-  const player = state.spotifyPlayer;
-  if (!player || typeof player.resume !== "function") return;
-  const tryResume = () => {
-    player.getCurrentState?.().then((current) => {
-      if (!current || !current.paused) return;
-      player.resume().catch(() => {});
-    }).catch(() => {});
-  };
-  window.setTimeout(tryResume, 700);
-  window.setTimeout(tryResume, 1600);
-}
+// Auto-resume removed: the tug-of-war was bidirectional — resuming Spotify made
+// the video stop. The real fix is to strip the audio track out of Pexels MP4s
+// in-browser (see mp4box-based audio-stripping below), so the firmware never
+// sees a competing audio decoder in the first place.
 
 function sceneVideoEls() {
   return { a: elements.ambientVideo, b: elements.ambientVideoB };
@@ -2342,6 +2353,137 @@ function silenceVideoEl(el) {
   }
 }
 
+// === Audio stripping for Pexels Scene clips ==================================
+// The TV firmware only allows one audio decoder at a time, so a muted Pexels clip
+// (which still carries an AAC track) tugs audio focus away from the Spotify SDK.
+// We can't strip the audio at the HTTP layer, so we demux the MP4 in-browser with
+// mp4box.js and feed only the video samples to the <video> via MediaSource
+// Extensions. The firmware sees a track-less video and never engages its audio
+// decoder, so Spotify keeps playing.
+//
+// This is opt-in via Settings -> "Scene: strip audio (experimental)". If anything
+// in the pipeline fails (MSE not supported, mp4box throws, codec rejected), we
+// fall back to the plain <video src=url> path so Scene at least shows clips.
+
+function audioStripSupported() {
+  try {
+    return (
+      typeof window.MediaSource !== "undefined" &&
+      typeof window.MP4Box !== "undefined" &&
+      typeof window.fetch !== "undefined" &&
+      typeof Response !== "undefined"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Returns a Promise that resolves once the video element is playing (or rejects
+// on demux/MSE failure so callers can fall back to the plain URL path).
+async function playSceneClipStripped(videoEl, url, tokenRef) {
+  if (!audioStripSupported()) throw new Error("Audio strip not supported");
+
+  // Clear any previous Blob URL on this element (its old MediaSource is dead).
+  try { URL.revokeObjectURL(videoEl.src); } catch {}
+
+  const ms = new MediaSource();
+  videoEl.src = URL.createObjectURL(ms);
+  state.sceneStripBlobs.push(videoEl.src);
+
+  await new Promise((resolve, reject) => {
+    const onOpen = () => { ms.removeEventListener("sourceopen", onOpen); resolve(); };
+    const onErr = (e) => { ms.removeEventListener("error", onErr); reject(e || new Error("MediaSource error")); };
+    ms.addEventListener("sourceopen", onOpen);
+    ms.addEventListener("error", onErr);
+  });
+
+  return new Promise((resolve, reject) => {
+    const mp4box = window.MP4Box.createFile();
+    let sourceBuffer = null;
+    let videoTrackId = null;
+    let appendQueue = [];
+    let mp4boxStopped = false;
+
+    const tryAppend = () => {
+      if (!sourceBuffer || sourceBuffer.updating || !appendQueue.length) return;
+      const next = appendQueue.shift();
+      try { sourceBuffer.appendBuffer(next.buffer); } catch (e) { reject(e); }
+      if (next.is_last) {
+        sourceBuffer.addEventListener("updateend", () => {
+          try { ms.endOfStream(); } catch {}
+        }, { once: true });
+      }
+    };
+
+    mp4box.onReady = (info) => {
+      // Token check: if user left Scene while we were loading, bail.
+      if (tokenRef.cancelled) { mp4boxStopped = true; reject(new Error("Cancelled")); return; }
+      const videoTrack = info.tracks.find((t) => t.type === "video");
+      if (!videoTrack) { reject(new Error("No video track in MP4")); return; }
+      videoTrackId = videoTrack.id;
+      // mp4box gives us a codec string like "avc1.640028" — exactly what MSE wants.
+      const mime = `video/mp4; codecs="${videoTrack.codec}"`;
+      if (!window.MediaSource.isTypeSupported(mime)) { reject(new Error(`MIME not supported: ${mime}`)); return; }
+      try {
+        sourceBuffer = ms.addSourceBuffer(mime);
+      } catch (e) { reject(e); return; }
+      sourceBuffer.mode = "segments";
+      sourceBuffer.addEventListener("updateend", tryAppend);
+
+      mp4box.setSegmentOptions(videoTrack.id, null, { nbSamples: 60 });
+      const initSegs = mp4box.initializeSegmentation();
+      for (const seg of initSegs) {
+        if (seg.id === videoTrack.id) appendQueue.push({ buffer: seg.buffer, is_last: false });
+      }
+      tryAppend();
+      mp4box.start();
+    };
+
+    mp4box.onSegment = (id, _user, buffer, _sampleNum, is_last) => {
+      if (mp4boxStopped) return;
+      if (id !== videoTrackId) return;
+      appendQueue.push({ buffer, is_last });
+      tryAppend();
+    };
+
+    mp4box.onError = (e) => { reject(new Error(`mp4box error: ${e}`)); };
+
+    // Stream the MP4 in. We feed appendBuffer with fileStart offsets so mp4box
+    // can keep its internal byte map; we don't need the whole file in memory.
+    (async () => {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) { reject(new Error(`Fetch failed ${response.status}`)); return; }
+        const reader = response.body.getReader();
+        let offset = 0;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          if (tokenRef.cancelled) { reject(new Error("Cancelled")); return; }
+          const { done, value } = await reader.read();
+          if (done) { mp4box.flush(); break; }
+          const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+          ab.fileStart = offset;
+          offset += value.byteLength;
+          mp4box.appendBuffer(ab);
+        }
+      } catch (err) { reject(err); }
+    })();
+
+    // Kick playback once enough has buffered. play() can reject if the firmware
+    // refuses the source — surface that so the caller falls back.
+    videoEl.addEventListener("canplay", () => {
+      videoEl.play().then(resolve).catch(reject);
+    }, { once: true });
+  });
+}
+
+function clearSceneStripBlobs() {
+  for (const url of state.sceneStripBlobs) {
+    try { URL.revokeObjectURL(url); } catch {}
+  }
+  state.sceneStripBlobs = [];
+}
+
 // Called by setAmbientMode + setView. Decides whether Scene should be running and
 // kicks off (or stops) playback. Stopping pauses both elements without tearing
 // down sources, so returning to Scene resumes quickly.
@@ -2355,6 +2497,7 @@ function syncAmbientVideo() {
     state.sceneToken += 1;
     try { a.pause(); } catch {}
     try { b?.pause(); } catch {}
+    clearSceneStripBlobs();
     return;
   }
   // Already running with a visible clip — resume it. Re-arm the onended advance
@@ -2368,7 +2511,6 @@ function syncAmbientVideo() {
       advanceSceneClip(token);
     };
     current.play().catch(() => {});
-    nudgeSpotifyResume();
     return;
   }
   startScenePlayback();
@@ -2477,10 +2619,37 @@ function advanceSceneClip(token, attempt = 0) {
     };
     // TV firmware can steal audio focus when this clip's audio track lands —
     // re-claim it for the Spotify SDK so music doesn't pause.
-    nudgeSpotifyResume();
     log(`Scene clip playing (${state.sceneSource}): ${url}`, "success");
   };
 
+  // Path A: strip audio via mp4box + MSE for Pexels clips when the toggle is on.
+  // We only attempt this on remote (Pexels) clips — local loops are already
+  // audio-free, so they go through the plain <video src> path.
+  const shouldStrip = state.sceneStripAudio && state.sceneSource === "pexels" && audioStripSupported();
+  if (shouldStrip) {
+    const tokenRef = { cancelled: false };
+    // If the scene token bumps mid-load, mark this strip attempt cancelled.
+    const startedAt = state.sceneToken;
+    const cancelWatcher = window.setInterval(() => {
+      if (state.sceneToken !== startedAt) {
+        tokenRef.cancelled = true;
+        window.clearInterval(cancelWatcher);
+      }
+    }, 400);
+    playSceneClipStripped(next, url, tokenRef)
+      .then(() => { window.clearInterval(cancelWatcher); })
+      .catch((err) => {
+        window.clearInterval(cancelWatcher);
+        if (tokenRef.cancelled) return;
+        log(`Scene: audio-strip failed (${err?.message || err}); falling back to plain URL.`, "warn");
+        // Fallback to plain <video src=url> — same conflict as before, but at
+        // least the clip plays. This single-clip fallback is non-destructive.
+        try { next.src = url; next.load(); next.play().catch(() => {}); } catch {}
+      });
+    return;
+  }
+
+  // Path B: plain URL — used for local loops and the strip-disabled state.
   next.src = url;
   next.load();
   const p = next.play();
