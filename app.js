@@ -252,6 +252,15 @@ function init() {
     return;
   }
 
+  // Lift #view-ambient out of .app and into the body root so nothing inside the
+  // app shell (margins, padding, scroll, focus auto-scroll) can affect it. With
+  // ambient as a body-level child its position:fixed inset:0 is the *only* thing
+  // that decides its placement — no more leaks at the bottom edge on the TV.
+  const ambientView = document.getElementById("view-ambient");
+  if (ambientView && ambientView.parentElement !== document.body) {
+    document.body.appendChild(ambientView);
+  }
+
   window.addEventListener("error", (event) => {
     log(`Window error: ${event.message} at ${event.filename}:${event.lineno}`, "error");
   });
@@ -431,6 +440,10 @@ function activeFocusables() {
   if (activeView) roots.push(activeView);
   const pill = document.getElementById("npPill");
   if (pill) roots.push(pill);
+  // Diagnostics is a body-level panel — when Debug View is on, include its
+  // focusables (including the scrollable log) so the remote can reach them.
+  const diagnostics = document.getElementById("diagnostics");
+  if (diagnostics && !diagnostics.hidden) roots.push(diagnostics);
 
   const seen = new Set();
   const result = [];
@@ -686,6 +699,20 @@ function normalizeRemoteKey(event) {
     448: "VolumeDown",
     449: "VolumeMute",
     461: "Back",
+    // Numpad alias for D-pad (phone keypad layout: 2 top → 8 bottom). Lets the
+    // user keep navigating when the regular arrows get stuck — particularly
+    // useful for scrolling the diagnostics log on the TV. Top-row digits.
+    50: "ArrowUp",      // 2
+    52: "ArrowLeft",    // 4
+    53: "Enter",        // 5
+    54: "ArrowRight",   // 6
+    56: "ArrowDown",    // 8
+    // Numpad codes (some firmwares emit these for the actual keypad keys).
+    98: "ArrowUp",      // Numpad2
+    100: "ArrowLeft",   // Numpad4
+    101: "Enter",       // Numpad5
+    102: "ArrowRight",  // Numpad6
+    104: "ArrowDown",   // Numpad8
   };
   if (codeMap[keyCode]) return codeMap[keyCode];
   if (event.key === " ") return "Space";
@@ -1368,6 +1395,16 @@ function setView(viewOrEvent) {
   // CSS hook: lets us scope rules to the current view (e.g. fully suppress the
   // .app column while ambient is up so its padding can't leak as a bottom bar).
   document.body.dataset.view = nextView;
+  // Reset any inherited scroll position when entering ambient — focus moves
+  // inside the fixed stage shouldn't ever scroll the document, but if a stray
+  // scroll snuck in earlier we wipe it here so the stage really fills 100vh.
+  if (nextView === "ambient") {
+    try {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    } catch {}
+  }
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("is-visible", section.id === `view-${nextView}`);
   }
