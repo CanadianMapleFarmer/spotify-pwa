@@ -743,10 +743,9 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowDown":
       event.preventDefault();
-      if (isQueueDrawerOpen()) {
-        scrollQueueList("down");
-        break;
-      }
+      // When the queue drawer is open, let normal focus navigation flow through
+      // the focusable rows — focusElement → keepElementVisible scrolls them
+      // into view automatically, so we no longer need a dedicated scroll path.
       if (isDiagnosticsOpen()) {
         scrollDiagnostics("down");
         break;
@@ -760,10 +759,6 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowUp":
       event.preventDefault();
-      if (isQueueDrawerOpen()) {
-        scrollQueueList("up");
-        break;
-      }
       if (isDiagnosticsOpen()) {
         scrollDiagnostics("up");
         break;
@@ -1169,6 +1164,14 @@ function createMediaCard(item, type) {
   } else {
     button.addEventListener("click", () => playItem(item, type));
   }
+  // Track tiles expose their data so openTrackMenuFromFocus can build a menu
+  // target without needing a per-view lookup table.
+  if (type === "track" && item?.uri) {
+    button.dataset.trackUri = item.uri;
+    button.dataset.trackName = item.name || "";
+    button.dataset.trackArtist = (item.artists || []).map((a) => a.name).join(", ");
+    button.dataset.trackImage = image || "";
+  }
   return button;
 }
 
@@ -1197,6 +1200,7 @@ async function openCollection(item, type) {
     state.collectionReturnView = state.currentView;
   }
   const totalKnown = type === "playlist" ? item.tracks?.total : item.total_tracks;
+  const releaseDate = type === "album" ? (item.release_date || "") : "";
   state.collection = {
     type,
     id: item.id,
@@ -1206,6 +1210,7 @@ async function openCollection(item, type) {
     byline: type === "playlist"
       ? (item.owner?.display_name ? `By ${item.owner.display_name}` : "Playlist")
       : (item.artists || []).map((artist) => artist.name).join(", "),
+    year: releaseDate ? releaseDate.slice(0, 4) : "",
     totalKnown: Number.isFinite(totalKnown) ? totalKnown : null,
     tracks: [],
     loading: true,
@@ -1226,15 +1231,32 @@ async function openCollection(item, type) {
 }
 
 async function fetchCollectionTracks(item, type) {
-  if (type === "album") {
-    const data = await spotifyApiJson(`/v1/albums/${item.id}/tracks?limit=50`);
-    return (data?.items || []).map((track) => normalizeCollectionTrack(track));
+  // Spotify caps per-page at 50; large playlists/albums need pagination via the
+  // `next` URL so we don't silently truncate. The next URL is fully-qualified;
+  // strip the host since spotifyApiFetch prepends it.
+  const startPath = type === "album"
+    ? `/v1/albums/${item.id}/tracks?limit=50`
+    : `/v1/playlists/${item.id}/items?limit=50`;
+  const getTrack = type === "album"
+    ? (entry) => entry
+    : (entry) => entry.track ?? entry.item;
+  const out = [];
+  let path = startPath;
+  const MAX_PAGES = 30; // 30 × 50 = 1500 tracks ceiling
+  for (let page = 0; page < MAX_PAGES && path; page++) {
+    const data = await spotifyApiJson(path);
+    if (!data) break;
+    for (const entry of data.items || []) {
+      const track = getTrack(entry);
+      if (!track || !track.uri) continue;
+      // Skip explicitly-unavailable and local-only tracks — they error if we
+      // try to play them and pad the duration total with garbage.
+      if (track.is_playable === false || track.is_local === true) continue;
+      out.push(normalizeCollectionTrack(track));
+    }
+    path = data.next ? data.next.replace(/^https:\/\/api\.spotify\.com/, "") : "";
   }
-  const data = await spotifyApiJson(`/v1/playlists/${item.id}/items?limit=50`);
-  return (data?.items || [])
-    .map((entry) => entry.item ?? entry.track)
-    .filter((track) => track && track.uri)
-    .map((track) => normalizeCollectionTrack(track));
+  return out;
 }
 
 function normalizeCollectionTrack(track) {
@@ -1274,7 +1296,7 @@ function renderCollection() {
     const countText = count ? `${count} song${count === 1 ? "" : "s"}` : "";
     const totalMs = coll.tracks.reduce((sum, track) => sum + (track.duration || 0), 0);
     const durationText = totalMs ? formatTotalDuration(totalMs) : "";
-    elements.collectionMeta.textContent = [coll.byline, countText, durationText]
+    elements.collectionMeta.textContent = [coll.byline, coll.year, countText, durationText]
       .filter(Boolean)
       .join(" · ");
   }
@@ -1547,18 +1569,6 @@ function closeQueueDrawer() {
   log("Queue drawer closed.");
 }
 
-// VIDAA has no wheel — Up/Down scroll the queue list while the drawer is open.
-function scrollQueueList(direction) {
-  const list = elements.queueList;
-  if (!list) return;
-  const step = Math.max(120, list.clientHeight - 60);
-  try {
-    list.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
-  } catch {
-    list.scrollTop += direction === "down" ? step : -step;
-  }
-}
-
 function normalizeQueueTrack(item) {
   const images = item?.album?.images || [];
   return {
@@ -1596,9 +1606,10 @@ function renderQueueDrawer(errorMessage) {
     return;
   }
   items.forEach((track, index) => {
-    const row = document.createElement("div");
-    row.className = "queue-row";
-    row.setAttribute("role", "listitem");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "focusable queue-row";
+    row.dataset.uri = track.uri || "";
     const art = track.image ? `url("${escapeHtml(track.image)}")` : "none";
     row.innerHTML = `
       <span class="queue-row__art" style="background-image:${art}"></span>
@@ -1608,8 +1619,26 @@ function renderQueueDrawer(errorMessage) {
       </span>
       <span class="queue-row__pos">${index + 1}</span>
     `;
+    row.addEventListener("click", () => {
+      playQueueTrack(track).catch((error) => logError("Play from queue failed", error));
+    });
     list.append(row);
   });
+}
+
+async function playQueueTrack(track) {
+  if (!track?.uri) return;
+  activateSpotifyElement();
+  requireAccessToken();
+  await ensureSpotifyDeviceReady();
+  const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/play"), {
+    method: "PUT",
+    body: JSON.stringify({ uris: [track.uri] }),
+  });
+  if (!response.ok) {
+    throw new Error(`Play failed (${response.status}): ${await readSpotifyError(response)}`);
+  }
+  closeQueueDrawer();
 }
 
 /* ------------------------------------------------------------------ *
@@ -1620,17 +1649,36 @@ function isTrackMenuOpen() {
   return Boolean(elements.trackMenu) && !elements.trackMenu.hidden;
 }
 
-// If a Collection track row currently has focus, open its menu (Right arrow).
+// Open the context menu for whatever track-like focusable is currently focused.
+// Two paths: collection rows look up the indexed track in state; standalone
+// track tiles (saved tracks, search results, recent shelf) carry their fields
+// as data-track-* attributes so we don't need to track them per-view.
 function openTrackMenuFromFocus() {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return false;
-  const row = active.closest(".collection-track");
-  if (!row) return false;
-  const index = Number(row.dataset.index);
-  const track = state.collection?.tracks?.[index];
-  if (!track || !track.uri) return false;
-  openTrackMenu(track);
-  return true;
+
+  const collectionRow = active.closest(".collection-track");
+  if (collectionRow) {
+    const index = Number(collectionRow.dataset.index);
+    const track = state.collection?.tracks?.[index];
+    if (track && track.uri) {
+      openTrackMenu(track);
+      return true;
+    }
+  }
+
+  const tile = active.closest("[data-track-uri]");
+  if (tile && tile.dataset.trackUri) {
+    openTrackMenu({
+      uri: tile.dataset.trackUri,
+      name: tile.dataset.trackName || "Untitled",
+      artist: tile.dataset.trackArtist || "",
+      image: tile.dataset.trackImage || "",
+    });
+    return true;
+  }
+
+  return false;
 }
 
 function openTrackMenu(track) {
@@ -1779,6 +1827,12 @@ async function addTrackToPlaylist(playlist, track) {
     body: JSON.stringify({ uris: [track.uri] }),
   });
   if (!response.ok) {
+    if (response.status === 403) {
+      // Tokens minted before the playlist-modify scopes were added won't carry
+      // permission; only a fresh pair-login fixes it.
+      showToast("Re-pair from Settings to enable Add to Playlist (extra Spotify permission needed).", "warn");
+      throw new Error("Missing playlist-modify scope (re-pair required)");
+    }
     throw new Error(`Add to playlist failed (${response.status}): ${await readSpotifyError(response)}`);
   }
   showToast(`Added "${track.name}" to ${playlist.name}.`, "success");

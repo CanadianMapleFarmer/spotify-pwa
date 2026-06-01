@@ -2950,10 +2950,20 @@ body.is-phone-pair {
   grid-template-columns: 52px 1fr auto;
   align-items: center;
   gap: 16px;
+  width: 100%;
   min-height: 64px;
   padding: 8px 10px;
+  border: 2px solid transparent;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+}
+
+.queue-row:hover {
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .queue-row__art {
