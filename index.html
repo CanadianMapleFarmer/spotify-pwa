@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=33">
+    <link rel="stylesheet" href="/styles.css?v=34">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -243,6 +243,9 @@
                 <span class="scene-np__track"><span class="scene-np__fill" id="sceneNpProgressFill"></span></span>
                 <span class="scene-np__time" id="sceneNpTime">0:00 / 0:00</span>
               </div>
+              <!-- Visible status badge so the user can tell, on the TV, whether the
+                   audio-strip path is actually running or whether we fell back. -->
+              <p class="scene-np__status" id="sceneNpStatus" data-state="idle">Scene: idle</p>
             </aside>
           </div>
 
@@ -400,7 +403,8 @@
             <output id="keyReadout">Waiting for key event</output>
           </div>
         </div>
-        <ol class="log" id="log" aria-live="polite"></ol>
+        <p class="log__hint">Focus this list and use ↑↓ to scroll.</p>
+        <ol class="focusable log" id="log" tabindex="0" aria-live="polite" aria-label="Diagnostics log — arrow keys scroll"></ol>
       </section>
     </main>
 
@@ -466,6 +470,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=33" type="module"></script>
+    <script src="/app.js?v=34" type="module"></script>
   </body>
 </html>

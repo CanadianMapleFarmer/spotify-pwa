@@ -156,6 +156,7 @@ const elements = {
   sceneNpArtist: document.querySelector("#sceneNpArtist"),
   sceneNpProgressFill: document.querySelector("#sceneNpProgressFill"),
   sceneNpTime: document.querySelector("#sceneNpTime"),
+  sceneNpStatus: document.querySelector("#sceneNpStatus"),
   ambientDriftA: document.querySelector("#ambientDriftA"),
   ambientDriftB: document.querySelector("#ambientDriftB"),
   ambientDriftC: document.querySelector("#ambientDriftC"),
@@ -404,6 +405,17 @@ function focusableElements() {
   return activeFocusables();
 }
 
+// When the diagnostics log has focus, arrow up/down should scroll it rather
+// than move focus elsewhere — VIDAA has no mouse/wheel, so this is the only
+// way to read past the visible portion of the log on a TV remote.
+function scrollIfLogFocused(direction) {
+  const active = document.activeElement;
+  if (!active || active.id !== "log") return false;
+  const step = Math.max(80, active.clientHeight - 40);
+  active.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
+  return true;
+}
+
 // Scope the focus pool to the chrome (nav) + the active view + the now-playing pill.
 // This stops "down"/"right" from teleporting into an off-screen view's controls.
 function activeFocusables() {
@@ -583,6 +595,7 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowDown":
       event.preventDefault();
+      if (scrollIfLogFocused("down")) break;
       moveFocusDirectional("down");
       break;
     case "ArrowLeft":
@@ -592,6 +605,7 @@ function handleRemoteEvent(event) {
       break;
     case "ArrowUp":
       event.preventDefault();
+      if (scrollIfLogFocused("up")) break;
       moveFocusDirectional("up");
       break;
     case "Enter":
@@ -2365,6 +2379,48 @@ function silenceVideoEl(el) {
 // in the pipeline fails (MSE not supported, mp4box throws, codec rejected), we
 // fall back to the plain <video src=url> path so Scene at least shows clips.
 
+// Visible status badge on the Scene now-playing card. State is one of:
+//   "idle"  — Scene not running
+//   "strip" — mp4box+MSE actively delivering an audio-stripped video stream
+//   "plain" — Strip path unavailable / off: playing original URL (conflict-prone)
+//   "error" — A clip failed to load entirely
+function setSceneStripStatus(state, detail) {
+  const el = elements.sceneNpStatus;
+  if (!el) return;
+  el.dataset.state = state;
+  const labels = {
+    idle: "Scene: idle",
+    strip: `Audio stripped${detail ? " · " + detail : ""}`,
+    plain: `Audio active${detail ? " · " + detail : ""}`,
+    error: `Clip failed${detail ? " · " + detail : ""}`,
+  };
+  el.textContent = labels[state] || state;
+}
+
+// Web Audio sink neutralization: route a video element's audio output through
+// Web Audio with a zero-gain node. Some firmwares respect Web Audio's sink as
+// the active audio surface, which can prevent the native video pipeline from
+// grabbing audio focus when an audio track slips through (e.g., when the strip
+// path falls back to plain URL). createMediaElementSource can only be called
+// once per element, so we track which ones we've already routed.
+const _webAudioRouted = new WeakSet();
+function neutralizeVideoAudioWithWebAudio(videoEl) {
+  if (!videoEl || _webAudioRouted.has(videoEl)) return;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const src = ctx.createMediaElementSource(videoEl);
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    _webAudioRouted.add(videoEl);
+  } catch {
+    // Already routed, insecure context, or unsupported — best-effort.
+  }
+}
+
 function audioStripSupported() {
   try {
     return (
@@ -2424,6 +2480,9 @@ async function playSceneClipStripped(videoEl, url, tokenRef) {
       // mp4box gives us a codec string like "avc1.640028" — exactly what MSE wants.
       const mime = `video/mp4; codecs="${videoTrack.codec}"`;
       if (!window.MediaSource.isTypeSupported(mime)) { reject(new Error(`MIME not supported: ${mime}`)); return; }
+      // We have a confirmed video-only feed coming. Mark status so the user can
+      // see at a glance that the strip path is actually engaged.
+      setSceneStripStatus("strip", videoTrack.codec);
       try {
         sourceBuffer = ms.addSourceBuffer(mime);
       } catch (e) { reject(e); return; }
@@ -2498,6 +2557,7 @@ function syncAmbientVideo() {
     try { a.pause(); } catch {}
     try { b?.pause(); } catch {}
     clearSceneStripBlobs();
+    setSceneStripStatus("idle");
     return;
   }
   // Already running with a visible clip — resume it. Re-arm the onended advance
@@ -2622,6 +2682,12 @@ function advanceSceneClip(token, attempt = 0) {
     log(`Scene clip playing (${state.sceneSource}): ${url}`, "success");
   };
 
+  // Belt-and-suspenders: route this video element's audio through Web Audio
+  // with a 0-gain sink, so even if a track sneaks through (strip fallback path
+  // or unstripped local clip), the firmware sees Web Audio as the sink and not
+  // the native video output. May or may not help on VIDAA, but cheap to try.
+  neutralizeVideoAudioWithWebAudio(next);
+
   // Path A: strip audio via mp4box + MSE for Pexels clips when the toggle is on.
   // We only attempt this on remote (Pexels) clips — local loops are already
   // audio-free, so they go through the plain <video src> path.
@@ -2641,7 +2707,12 @@ function advanceSceneClip(token, attempt = 0) {
       .catch((err) => {
         window.clearInterval(cancelWatcher);
         if (tokenRef.cancelled) return;
-        log(`Scene: audio-strip failed (${err?.message || err}); falling back to plain URL.`, "warn");
+        const reason = err?.message || String(err);
+        log(`Scene: audio-strip failed (${reason}); falling back to plain URL.`, "warn");
+        // Make it visible on the TV — the user shouldn't need to dig into logs
+        // to know whether the strip is engaged or not.
+        showToast(`Scene strip failed: ${reason}. Falling back.`, "warn");
+        setSceneStripStatus("plain", "strip failed");
         // Fallback to plain <video src=url> — same conflict as before, but at
         // least the clip plays. This single-clip fallback is non-destructive.
         try { next.src = url; next.load(); next.play().catch(() => {}); } catch {}
@@ -2650,6 +2721,7 @@ function advanceSceneClip(token, attempt = 0) {
   }
 
   // Path B: plain URL — used for local loops and the strip-disabled state.
+  setSceneStripStatus("plain", state.sceneSource === "local" ? "local clip" : "strip off");
   next.src = url;
   next.load();
   const p = next.play();

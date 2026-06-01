@@ -752,10 +752,19 @@ body[data-view="ambient"] .np-pill {
   display: none !important;
 }
 
+body[data-view="ambient"] {
+  /* Hard scroll lock so nothing in .app can scroll out from behind the fixed
+     stage and leak a strip of background colour at the viewport edge. */
+  overflow: hidden;
+  height: 100vh;
+}
+
 body[data-view="ambient"] .app {
   width: 100%;
+  height: 100vh;
   margin: 0;
   padding: 0 !important;
+  overflow: hidden;
 }
 
 .ambient-view.is-visible {
@@ -766,11 +775,13 @@ body[data-view="ambient"] .app {
 }
 
 .ambient-stage {
-  position: fixed;
+  /* Parent .ambient-view.is-visible is position:fixed inset:0, so making the
+     stage absolute+inset:0 fills the same viewport box without the TV renderer
+     having to reconcile two stacked fixed elements (which leaked a bottom bar
+     on VIDAA). The stage's absolute-positioned children — controls, scene-np
+     card, scrim — continue to work because the stage is their containing block. */
+  position: absolute;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
-  min-height: 100vh;
   overflow: hidden;
   border-radius: 0;
   isolation: isolate;
@@ -1019,6 +1030,22 @@ body[data-view="ambient"] .app {
   font-variant-numeric: tabular-nums;
 }
 
+.scene-np__status {
+  margin: 4px 0 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  align-self: flex-start;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scene-np__status[data-state="idle"]   { background: rgba(255,255,255,0.08); color: rgba(232,236,241,0.85); }
+.scene-np__status[data-state="strip"]  { background: rgba(30,215,96,0.18);   color: #6fe49a; }
+.scene-np__status[data-state="plain"]  { background: rgba(255,200,60,0.18);  color: #ffd97a; }
+.scene-np__status[data-state="error"]  { background: rgba(255,80,80,0.18);   color: #ff9a9a; }
+
 
 /* === Visualizer mode === */
 .ambient-visualizer {
@@ -1118,6 +1145,13 @@ body[data-view="ambient"] .app {
   flex-direction: column;
   align-items: flex-start;
   gap: 18px;
+  /* No outer cap — text children carry their own max-widths so the progress bar
+     can stretch to its intended ~960px on a 4K TV without being clipped. */
+  flex: 1;
+}
+
+.ambient-room-meta .eyebrow,
+.ambient-room-meta > p:not(.eyebrow) {
   max-width: 46ch;
 }
 
@@ -1150,12 +1184,15 @@ body[data-view="ambient"] .app {
   font-weight: 600;
 }
 
+/* Sized in vw clamps so the bar is substantial on a 4K 65" TV but still
+   reasonable on smaller screens. The room title above is clamp(3rem,6vw,6.5rem)
+   so the bar needs visual weight to belong to it. */
 .ambient-progress {
   display: flex;
   align-items: center;
-  gap: 20px;
-  margin-top: 14px;
-  width: min(720px, 100%);
+  gap: clamp(20px, 1.8vw, 36px);
+  margin-top: clamp(16px, 1.6vw, 30px);
+  width: min(960px, 100%);
   font-family: var(--font-body);
   font-style: normal;
 }
@@ -1163,7 +1200,7 @@ body[data-view="ambient"] .app {
 .ambient-progress__track {
   position: relative;
   flex: 1;
-  height: 14px;
+  height: clamp(18px, 1.4vw, 30px);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.22);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.32);
@@ -1180,7 +1217,7 @@ body[data-view="ambient"] .app {
   background: #1ed760;
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.26),
-    0 0 18px rgba(30, 215, 96, 0.4);
+    0 0 22px rgba(30, 215, 96, 0.5);
 }
 
 .ambient-progress__fill::after {
@@ -1188,22 +1225,22 @@ body[data-view="ambient"] .app {
   position: absolute;
   top: 50%;
   right: 0;
-  width: 22px;
-  height: 22px;
+  width: clamp(28px, 2.4vw, 44px);
+  height: clamp(28px, 2.4vw, 44px);
   transform: translate(50%, -50%);
   border-radius: 50%;
   background: #ffffff;
   box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.55),
-    0 0 0 2px rgba(30, 215, 96, 0.55);
+    0 2px 12px rgba(0, 0, 0, 0.55),
+    0 0 0 3px rgba(30, 215, 96, 0.55);
 }
 
 .ambient-progress__time {
-  font-size: 1.2rem;
+  font-size: clamp(1.3rem, 1.6vw, 2.1rem);
   font-weight: 700;
   color: #f2f5f9;
   font-variant-numeric: tabular-nums;
-  padding: 6px 16px;
+  padding: clamp(8px, 0.7vw, 14px) clamp(18px, 1.4vw, 28px);
   border-radius: 999px;
   background: rgba(6, 8, 13, 0.6);
   letter-spacing: 0.02em;
@@ -1257,11 +1294,20 @@ button.is-active {
   display: flex;
   flex-direction: column-reverse;
   gap: 7px;
-  max-height: 220px;
+  max-height: 320px;
   margin: 0;
-  padding: 0;
+  padding: 6px;
   overflow: auto;
   list-style: none;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.log__hint {
+  margin: 14px 0 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
 }
 
 .log li {
