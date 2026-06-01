@@ -99,23 +99,38 @@ decoder ever engages.
 
 ### One-time setup
 
+Two steps the Firebase CLI cannot do (console only):
+
 1. Upgrade the Firebase project to the **Blaze plan** (required for any Cloud
-   Function deploys; free-tier quotas apply for actual usage).
-2. **Enable Storage** in the Firebase Console (Build → Storage → Get started).
-   The first bucket auto-provisions in `us-central1`.
-3. **Set the Pexels API key** as a Function secret:
-   ```sh
-   cd functions && npm install
-   firebase functions:secrets:set PEXELS_KEY
-   ```
-4. **Deploy** the rules, storage rules, and functions:
-   ```sh
-   firebase deploy --only firestore:rules,storage,functions
-   ```
-5. (Optional) Trigger the first library refresh by hitting `refreshSceneLibrary`
-   manually from the Cloud Console, or wait for the next Monday 03:00 UTC run.
-6. In the TV app, open **Settings → Scene playback → Image-sequence Scene
-   mode** and turn it **On**. Scene now uses the pre-converted JPG library.
+   Function deploys; free-tier quotas still apply for actual usage). Firebase
+   Console → Upgrade.
+2. **Enable Storage** in the Firebase Console (Build → Storage → Get started),
+   default location `us-central1`. First-time bucket creation is a console
+   wizard.
+
+Then run the one-shot script from the repo root:
+
+```sh
+./scripts/setup-scene-backend.sh
+```
+
+It installs function deps, enables the needed Cloud APIs via `gcloud`
+(best-effort — Firebase will enable any missing ones on first deploy anyway),
+prompts for and stores the Pexels API key as a function secret, deploys
+Firestore rules + Storage rules + all functions, and offers to trigger the
+first library refresh.
+
+If you'd rather do it manually:
+
+```sh
+cd functions && npm install && cd ..
+firebase functions:secrets:set PEXELS_KEY
+firebase deploy --only firestore:rules,storage,functions
+# (optional) trigger first refresh — console: Functions → refreshSceneLibrary
+```
+
+Finally, on the TV open **Settings → Scene playback → Image-sequence Scene
+mode** and turn it **On**.
 
 ### What runs
 
