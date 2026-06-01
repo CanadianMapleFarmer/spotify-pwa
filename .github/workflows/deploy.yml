@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Verify hosting payload
         run: |
@@ -42,9 +42,9 @@ jobs:
 
       - name: Setup Node
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Deploy Firestore rules
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           echo "$FIREBASE_SA" > "$RUNNER_TEMP/sa.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
-          if npx --yes firebase-tools@13 deploy --only firestore:rules --project spotify-pwa-6969 --non-interactive; then
+          if npx --yes firebase-tools@15 deploy --only firestore:rules --project spotify-pwa-6969 --non-interactive; then
             echo "Firestore rules deployed."
           else
             echo "::warning::Firestore rules deploy failed — usually means Firestore isn't enabled yet on the project. Enable it in the Firebase Console (Build → Firestore Database → Create database), then re-run this workflow."
@@ -71,7 +71,7 @@ jobs:
 
       - name: Deploy live (push to main)
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-        uses: FirebaseExtended/action-hosting-deploy@v0
+        uses: FirebaseExtended/action-hosting-deploy@v0.10.0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
@@ -80,7 +80,7 @@ jobs:
 
       - name: Deploy preview (pull request)
         if: github.event_name == 'pull_request'
-        uses: FirebaseExtended/action-hosting-deploy@v0
+        uses: FirebaseExtended/action-hosting-deploy@v0.10.0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPOTIFY_TV_PWA }}
