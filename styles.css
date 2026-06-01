@@ -455,8 +455,10 @@ body.debug-on .status-strip {
   gap: 18px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-padding-inline: 6px;
-  padding: 6px 6px 18px;
+  scroll-padding-inline: 16px;
+  /* Generous inset so the focus ring + scale(1.04) of edge cards isn't clipped by
+     the scroll container (overflow-x:auto forces overflow-y:auto, clipping top/bottom too). */
+  padding: 16px 16px 24px;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
@@ -615,6 +617,18 @@ body.debug-on .status-strip {
   border-radius: 8px;
   isolation: isolate;
   background: linear-gradient(135deg, #060912, #0c111c 48%, #05080d);
+}
+
+/* Fullscreen: fill the viewport edge-to-edge. We target both :fullscreen (modern)
+   and a JS-applied .is-fullscreen class (older TV Blink that mishandles :fullscreen).
+   The stage's absolutely-positioned children — controls + metadata bubble — ride
+   along automatically since the stage is their containing block. */
+.ambient-stage:fullscreen,
+.ambient-stage.is-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  border-radius: 0;
 }
 
 .ambient-stage > .ambient-room,
@@ -1313,11 +1327,11 @@ body.has-pill .app {
 
 .np-pill__time {
   display: block;
-  margin: 5px 0 0;
-  font-size: 0.74rem;
+  margin: 6px 0 0;
+  font-size: 0.84rem;
   font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
+  letter-spacing: 0.03em;
+  color: rgba(246, 248, 251, 0.86);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1382,6 +1396,29 @@ body.has-pill .app {
   height: 26px;
 }
 
+/* Shuffle/repeat are secondary toggles — smaller than the transport buttons, and
+   when on they get an accent ring/tint (reserve the solid green fill for play). */
+.np-pill__btn--toggle {
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+}
+
+.np-pill__btn--toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.np-pill__btn.is-active {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(30, 215, 96, 0.16);
+}
+
+.np-pill__btn--repeat {
+  position: relative;
+}
+
 @media (max-width: 900px) {
   .np-pill {
     bottom: 16px;
@@ -1391,7 +1428,9 @@ body.has-pill .app {
   }
 
   .np-pill__btn { width: 44px; height: 44px; min-height: 44px; }
+  .np-pill__btn--toggle { width: 38px; height: 38px; min-height: 38px; }
   .np-pill__btn--primary { width: 50px; height: 50px; min-height: 50px; }
+  .np-pill__controls { gap: 6px; }
 }
 
 /* === Settings section + debug toggle === */
@@ -1866,7 +1905,7 @@ body.is-phone-pair {
 .ambient-controls {
   flex-direction: column;
   align-items: flex-start;
-  gap: 16px;
+  gap: 20px;
 }
 
 .ambient-controls__modes,
@@ -1875,7 +1914,7 @@ body.is-phone-pair {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
 }
 
 /* Scene category + skip controls — only relevant while Scene mode is active. */
@@ -1912,24 +1951,54 @@ body.is-phone-pair {
   height: 22px;
 }
 
-/* The category toggle holds both icons; show only the one for the active category. */
-.scene-btn__icon {
-  display: none;
-}
-
-#sceneCategoryBtn[data-category="nature"] .scene-btn__icon--nature,
-#sceneCategoryBtn[data-category="skyline"] .scene-btn__icon--skyline {
-  display: inline-block;
-}
-
-/* Default (before JS sets data-category): show the nature icon. */
-#sceneCategoryBtn:not([data-category]) .scene-btn__icon--nature {
-  display: inline-block;
-}
-
 .scene-btn__label {
   font-size: 0.92rem;
   letter-spacing: 0.01em;
+}
+
+/* Segmented Nature/City toggle — a single pill split into two flip-between halves. */
+.scene-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(10, 14, 22, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.scene-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(246, 248, 251, 0.72);
+  font-weight: 700;
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.scene-seg:hover {
+  color: #f6f8fb;
+}
+
+.scene-seg.is-active {
+  background: var(--green);
+  color: #07100a;
+}
+
+.scene-seg__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
 }
 
 .ambient-mode-btn {
@@ -1948,6 +2017,37 @@ body.is-phone-pair {
   background: var(--green);
   border-color: transparent;
   color: #07100a;
+}
+
+/* Fullscreen toggle lives in the modes row; icon + label, with the icon swapping
+   between enter/exit based on the live fullscreen state. */
+.ambient-fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.ambient-fullscreen-btn__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.ambient-fullscreen-btn__icon--exit {
+  display: none;
+}
+
+.ambient-fullscreen-btn.is-fullscreen .ambient-fullscreen-btn__icon--enter {
+  display: none;
+}
+
+.ambient-fullscreen-btn.is-fullscreen .ambient-fullscreen-btn__icon--exit {
+  display: inline-block;
+}
+
+.ambient-fullscreen-btn__label {
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
 }
 
 .ambient-controls__transport .transport-btn {
@@ -2024,24 +2124,27 @@ body.is-phone-pair {
 
 .now-backdrop {
   position: absolute;
-  inset: -8%;
+  inset: -14%;
   z-index: 0;
   background-size: cover;
   background-position: center;
   background-color: #06080d;
-  transform: scale(1.16);
-  filter: blur(30px) saturate(1.2) brightness(0.52);
+  /* Heavy blur + scale smears the art into a smooth colour wash instead of the
+     chunky, over-saturated blobs a light blur leaves on a large surface. The big
+     scale/inset keeps the blurred edges off-screen. */
+  transform: scale(1.32);
+  filter: blur(64px) saturate(0.92) brightness(0.5);
 }
 
 .now-backdrop::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(
-    120% 90% at 50% 30%,
-    rgba(6, 8, 13, 0.22),
-    rgba(6, 8, 13, 0.78) 75%
-  );
+  /* Radial centre-out darkening + a vertical wash for depth so text stays readable
+     and the colour stays calm rather than muddy. */
+  background:
+    radial-gradient(130% 100% at 50% 26%, rgba(6, 8, 13, 0.3), rgba(6, 8, 13, 0.86) 78%),
+    linear-gradient(180deg, rgba(6, 8, 13, 0.34) 0%, rgba(6, 8, 13, 0.18) 46%, rgba(6, 8, 13, 0.6) 100%);
 }
 
 .view-now .now-layout {

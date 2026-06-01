@@ -1,9 +1,9 @@
-const CACHE_NAME = "spotify-tv-v21";
+const CACHE_NAME = "spotify-tv-v22";
 const ASSETS = [
   "/",
   "/index.html",
   "/styles.css",
-  "/app.js?v=28",
+  "/app.js?v=29",
   "/manifest.webmanifest",
   "/public/icons/spotify-logo.png",
 ];

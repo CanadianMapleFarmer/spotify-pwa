@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=28">
+    <link rel="stylesheet" href="/styles.css?v=29">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -222,7 +222,7 @@
             <span class="drift drift--b" id="ambientDriftB"></span>
             <span class="drift drift--c" id="ambientDriftC"></span>
             <span class="drift drift--d" id="ambientDriftD"></span>
-            <div class="np-bubble np-bubble--scene" id="ambientBubble" data-corner="bl">
+            <div class="np-bubble np-bubble--scene" id="ambientBubble" data-corner="tl">
               <div class="np-bubble__meta">
                 <p class="np-bubble__title" id="ambientBubbleTitle">Nothing playing</p>
                 <p class="np-bubble__artist" id="ambientBubbleArtist"></p>
@@ -257,13 +257,23 @@
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Scene</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
+              <button class="focusable ambient-mode-btn ambient-fullscreen-btn" id="ambientFullscreenBtn" data-action="toggleAmbientFullscreen" aria-label="Enter fullscreen" aria-pressed="false" title="Fullscreen">
+                <svg class="ambient-fullscreen-btn__icon ambient-fullscreen-btn__icon--enter" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                <svg class="ambient-fullscreen-btn__icon ambient-fullscreen-btn__icon--exit" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm11 8v-2h-3v5h2v-3h1zm-3-8h3V8h-1V5h-2v3z"/></svg>
+                <span class="ambient-fullscreen-btn__label">Fullscreen</span>
+              </button>
             </div>
             <div class="ambient-controls__scene" id="ambientSceneControls">
-              <button class="focusable scene-btn" id="sceneCategoryBtn" data-action="toggleSceneCategory" aria-label="Scene category: Nature" title="Toggle Scene category">
-                <svg class="scene-btn__icon scene-btn__icon--nature" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 6l-3.75 5 2.85 3.8-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22L14 6z"/></svg>
-                <svg class="scene-btn__icon scene-btn__icon--skyline" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>
-                <span class="scene-btn__label" id="sceneCategoryLabel">Nature</span>
-              </button>
+              <div class="scene-toggle" role="group" aria-label="Scene category">
+                <button class="focusable scene-seg" id="sceneNatureBtn" data-action="selectSceneCategory" data-category="nature" aria-pressed="true">
+                  <svg class="scene-seg__icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 6l-3.75 5 2.85 3.8-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22L14 6z"/></svg>
+                  <span class="scene-seg__label">Nature</span>
+                </button>
+                <button class="focusable scene-seg" id="sceneSkylineBtn" data-action="selectSceneCategory" data-category="skyline" aria-pressed="false">
+                  <svg class="scene-seg__icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>
+                  <span class="scene-seg__label">City</span>
+                </button>
+              </div>
               <button class="focusable scene-btn scene-btn--skip" id="sceneSkipBtn" data-action="skipSceneClip" aria-label="Skip to next Scene clip" title="Next clip">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
                 <span class="scene-btn__label">Skip</span>
@@ -391,6 +401,9 @@
         </span>
       </button>
       <div class="np-pill__controls">
+        <button class="focusable np-pill__btn np-pill__btn--toggle" data-action="toggleShuffle" aria-label="Shuffle" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.34l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.2z"/></svg>
+        </button>
         <button class="focusable np-pill__btn" data-action="previousTrack" aria-label="Previous track">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" fill="currentColor"/></svg>
         </button>
@@ -399,6 +412,10 @@
         </button>
         <button class="focusable np-pill__btn" data-action="nextTrack" aria-label="Next track">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" fill="currentColor"/></svg>
+        </button>
+        <button class="focusable np-pill__btn np-pill__btn--toggle np-pill__btn--repeat" data-action="cycleRepeat" aria-label="Repeat: off">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+          <span class="transport-btn__badge" aria-hidden="true">1</span>
         </button>
       </div>
     </aside>
@@ -410,6 +427,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
     <script src="/pexels-config.js?v=1"></script>
-    <script src="/app.js?v=28" type="module"></script>
+    <script src="/app.js?v=29" type="module"></script>
   </body>
 </html>

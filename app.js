@@ -36,7 +36,9 @@ const AMBIENT_MODE_LABELS = {
   screensaver: "Scene",
   visualizer: "Visualizer",
 };
-const BUBBLE_CORNERS = ["bl", "br", "tr", "tl"];
+// Scene metadata bubble drifts only between the top corners so it never collides
+// with the control cluster anchored bottom-left.
+const BUBBLE_CORNERS = ["tl", "tr"];
 
 // Screensaver scenery, tried in order. Local files (drop your own loops into
 // public/ambient/) win first; the hotlinked city loops are a best-effort
@@ -74,6 +76,7 @@ const state = {
   spotifyPlayer: null,
   spotifyPlayerPromise: null,
   spotifyDeviceId: "",
+  spotifyElementActivated: false,
   spotifyVolume: 0.7,
   pairPollTimer: 0,
   currentView: "home",
@@ -160,9 +163,10 @@ const elements = {
   ambientVideo: document.querySelector("#ambientVideo"),
   ambientVideoB: document.querySelector("#ambientVideoB"),
   ambientSceneControls: document.querySelector("#ambientSceneControls"),
-  sceneCategoryBtn: document.querySelector("#sceneCategoryBtn"),
-  sceneCategoryLabel: document.querySelector("#sceneCategoryLabel"),
+  sceneNatureBtn: document.querySelector("#sceneNatureBtn"),
+  sceneSkylineBtn: document.querySelector("#sceneSkylineBtn"),
   sceneSkipBtn: document.querySelector("#sceneSkipBtn"),
+  ambientFullscreenBtn: document.querySelector("#ambientFullscreenBtn"),
   ambientControls: document.querySelector("#ambientControls"),
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
@@ -199,8 +203,9 @@ const actions = {
   loadLibrary,
   loadDevices,
   setAmbientMode,
-  toggleSceneCategory,
+  selectSceneCategory,
   skipSceneClip,
+  toggleAmbientFullscreen,
   playCollection,
   toggleCollectionShuffle,
   collectionBack,
@@ -963,6 +968,7 @@ function createMediaCard(item, type) {
 }
 
 async function playItem(item, type) {
+  activateSpotifyElement();
   requireAccessToken();
   await ensureSpotifyDeviceReady();
   const body = (type === "playlist" || type === "album")
@@ -1139,6 +1145,7 @@ function playCollection() {
 }
 
 async function startCollectionPlayback({ offsetUri } = {}) {
+  activateSpotifyElement();
   const coll = state.collection;
   if (!coll?.contextUri) {
     showToast("Nothing to play here.", "error");
@@ -1186,6 +1193,12 @@ function collectionBack() {
 }
 
 function handleBack() {
+  // In fullscreen ambient, Back should drop out of fullscreen first, not navigate.
+  if (document.fullscreenElement) {
+    exitAmbientFullscreen();
+    log("Back: exited fullscreen.");
+    return;
+  }
   if (state.currentView === "collection") {
     collectionBack();
     log("Back: returned to collection source.");
@@ -1213,6 +1226,32 @@ async function ensureSpotifyDeviceReady() {
     return await createSpotifyPlayer();
   } catch (error) {
     throw new Error(`TV player not ready: ${error?.message || error}`);
+  }
+}
+
+// Desktop/web browsers gate the SDK's <audio> element behind a user gesture: until
+// activateElement() runs inside a click/keypress, the device registers as ready but
+// can't actually render audio. Issuing /play then fails with "Playback error" and
+// Spotify Connect auto-skips through the context trying to recover — which is the
+// "skips a few songs before it starts" bug. We must call this synchronously from the
+// gesture (before any await), so playback entry points invoke it first thing. Once
+// unlocked it stays unlocked, so this is a one-time no-op after the first play.
+function activateSpotifyElement() {
+  if (state.spotifyElementActivated) return;
+  const player = state.spotifyPlayer;
+  if (!player || typeof player.activateElement !== "function") return;
+  try {
+    const result = player.activateElement();
+    state.spotifyElementActivated = true;
+    log("Spotify audio element activated for playback.", "success");
+    if (result && typeof result.catch === "function") {
+      result.catch((error) => {
+        state.spotifyElementActivated = false;
+        logError("activateElement failed", error);
+      });
+    }
+  } catch (error) {
+    logError("activateElement threw", error);
   }
 }
 
@@ -1304,6 +1343,50 @@ function cycleAmbientMode(direction) {
     : (safeIdx + 1) % AMBIENT_MODES.length;
   setAmbientMode(AMBIENT_MODES[next]);
 }
+
+// Fullscreen the whole ambient stage so the active mode (Room/Visualizer/Scene)
+// fills the screen while its absolutely-positioned controls + metadata bubble stay
+// usable. We fullscreen the stage (not the document) so those overlays come along.
+function toggleAmbientFullscreen() {
+  if (document.fullscreenElement) {
+    exitAmbientFullscreen();
+  } else {
+    enterAmbientFullscreen();
+  }
+}
+
+function enterAmbientFullscreen() {
+  const stage = elements.ambientStage;
+  if (!stage || !stage.requestFullscreen) {
+    log("Fullscreen not supported on this device.", "warn");
+    return;
+  }
+  stage.requestFullscreen().catch((error) => {
+    logError("Fullscreen request failed", error);
+  });
+}
+
+function exitAmbientFullscreen() {
+  if (!document.fullscreenElement) return;
+  if (document.exitFullscreen) {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+// Mirror the live fullscreen state onto the toggle button (icon swap + a11y) and
+// the stage (CSS hook for TVs whose Blink lacks reliable :fullscreen styling).
+function reflectFullscreen() {
+  const isFull = Boolean(document.fullscreenElement);
+  const btn = elements.ambientFullscreenBtn;
+  if (btn) {
+    btn.classList.toggle("is-fullscreen", isFull);
+    btn.setAttribute("aria-pressed", isFull ? "true" : "false");
+    btn.setAttribute("aria-label", isFull ? "Exit fullscreen" : "Enter fullscreen");
+  }
+  elements.ambientStage?.classList.toggle("is-fullscreen", isFull);
+}
+
+document.addEventListener("fullscreenchange", reflectFullscreen);
 
 function testStorage() {
   const value = new Date().toISOString();
@@ -1700,6 +1783,7 @@ function waitForSpotifyDeviceId(timeoutMs) {
 }
 
 async function toggleSpotifyPlayback() {
+  activateSpotifyElement();
   if (!state.spotifyPlayer) await createSpotifyPlayer();
   await state.spotifyPlayer.togglePlay();
   log("Spotify togglePlay() called.", "success");
@@ -2356,11 +2440,13 @@ function skipSceneClip() {
   advanceSceneClip(state.sceneToken);
 }
 
-// Toggle category, persist it, reflect the icon/label, and rebuild the playlist.
-function toggleSceneCategory() {
-  const idx = SCENE_CATEGORIES.indexOf(state.sceneCategory);
-  const safeIdx = idx < 0 ? 0 : idx;
-  state.sceneCategory = SCENE_CATEGORIES[(safeIdx + 1) % SCENE_CATEGORIES.length];
+// Segmented control: pick a category directly. No-op if already active, otherwise
+// persist it, reflect the active segment, and rebuild the playlist.
+function selectSceneCategory(event) {
+  const category = event?.currentTarget?.dataset?.category || event?.target?.dataset?.category;
+  if (!category || !SCENE_CATEGORIES.includes(category)) return;
+  if (category === state.sceneCategory) return;
+  state.sceneCategory = category;
   try {
     localStorage.setItem(storageKeys.sceneCategory, state.sceneCategory);
   } catch {}
@@ -2372,15 +2458,17 @@ function toggleSceneCategory() {
   }
 }
 
-// Sync the toggle button's data-category (drives which SVG shows) + label + a11y.
+// Reflect which segment is active across both Nature/City buttons (class + a11y).
 function reflectSceneCategory() {
-  const label = SCENE_CATEGORY_LABELS[state.sceneCategory] || "Nature";
-  if (elements.sceneCategoryBtn) {
-    elements.sceneCategoryBtn.dataset.category = state.sceneCategory;
-    elements.sceneCategoryBtn.setAttribute("aria-label", `Scene category: ${label}`);
-  }
-  if (elements.sceneCategoryLabel) {
-    elements.sceneCategoryLabel.textContent = label;
+  const segments = [
+    [elements.sceneNatureBtn, "nature"],
+    [elements.sceneSkylineBtn, "skyline"],
+  ];
+  for (const [btn, category] of segments) {
+    if (!btn) continue;
+    const isActive = state.sceneCategory === category;
+    btn.classList.toggle("is-active", isActive);
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
   }
 }
 
