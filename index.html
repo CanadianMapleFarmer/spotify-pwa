@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=31">
+    <link rel="stylesheet" href="/styles.css?v=32">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -98,7 +98,12 @@
             <p class="eyebrow">Home</p>
             <h2>Listen Now</h2>
           </div>
-          <button class="focusable icon-button" data-action="refreshAll">Refresh</button>
+          <button class="focusable refresh-btn" data-action="refreshAll" aria-label="Refresh library">
+            <svg class="refresh-btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.74 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+            </svg>
+            <span class="refresh-btn__label">Refresh</span>
+          </button>
         </div>
         <div class="signed-out" id="signedOutHero" hidden>
           <span class="signed-out__glow" aria-hidden="true"></span>
@@ -222,12 +227,35 @@
             <span class="drift drift--b" id="ambientDriftB"></span>
             <span class="drift drift--c" id="ambientDriftC"></span>
             <span class="drift drift--d" id="ambientDriftD"></span>
-            <div class="np-bubble np-bubble--scene" id="ambientBubble" data-corner="tl">
-              <div class="np-bubble__meta">
-                <p class="np-bubble__title" id="ambientBubbleTitle">Nothing playing</p>
-                <p class="np-bubble__artist" id="ambientBubbleArtist"></p>
+            <!-- Scene now-playing card: art + meta + progress + transport. Floats over
+                 the video so users can read what's playing and skip/pause without
+                 leaving Scene. Lives inside the screensaver so it only renders here. -->
+            <aside class="scene-np" id="sceneNp" aria-label="Now playing">
+              <div class="scene-np__row">
+                <span class="scene-np__art">
+                  <img id="sceneNpArt" alt="">
+                </span>
+                <div class="scene-np__meta">
+                  <p class="scene-np__title" id="sceneNpTitle">Nothing playing</p>
+                  <p class="scene-np__artist" id="sceneNpArtist"></p>
+                </div>
               </div>
-            </div>
+              <div class="scene-np__progress" aria-hidden="true">
+                <span class="scene-np__track"><span class="scene-np__fill" id="sceneNpProgressFill"></span></span>
+                <span class="scene-np__time" id="sceneNpTime">0:00 / 0:00</span>
+              </div>
+              <div class="scene-np__controls">
+                <button class="focusable scene-np__btn" data-action="previousTrack" aria-label="Previous track">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                </button>
+                <button class="focusable scene-np__btn scene-np__btn--primary" data-action="toggleSpotifyPlayback" aria-label="Play or pause" id="sceneNpPlayBtn">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                </button>
+                <button class="focusable scene-np__btn" data-action="nextTrack" aria-label="Next track">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
+                </button>
+              </div>
+            </aside>
           </div>
 
           <div class="ambient-visualizer" id="ambientVisualizer" aria-hidden="true">
@@ -257,11 +285,6 @@
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="room" aria-label="Room display mode">Room</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="screensaver" aria-label="Screensaver mode">Scene</button>
               <button class="focusable ambient-mode-btn" data-action="setAmbientMode" data-mode="visualizer" aria-label="Visualizer mode">Visualizer</button>
-              <button class="focusable ambient-mode-btn ambient-fullscreen-btn" id="ambientFullscreenBtn" data-action="toggleAmbientFullscreen" aria-label="Enter fullscreen" aria-pressed="false" title="Fullscreen">
-                <svg class="ambient-fullscreen-btn__icon ambient-fullscreen-btn__icon--enter" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-                <svg class="ambient-fullscreen-btn__icon ambient-fullscreen-btn__icon--exit" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm11 8v-2h-3v5h2v-3h1zm-3-8h3V8h-1V5h-2v3z"/></svg>
-                <span class="ambient-fullscreen-btn__label">Fullscreen</span>
-              </button>
             </div>
             <div class="ambient-controls__scene" id="ambientSceneControls">
               <div class="scene-toggle" role="group" aria-label="Scene category">
@@ -441,6 +464,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
     <script src="/pexels-config.js?v=1"></script>
-    <script src="/app.js?v=31" type="module"></script>
+    <script src="/app.js?v=32" type="module"></script>
   </body>
 </html>

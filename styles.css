@@ -488,6 +488,41 @@ body.debug-on .status-strip {
   padding: 0;
 }
 
+/* Refresh affordance in the section-title header — icon + label pill, styled to
+   match the rest of the elevated UI rather than the bare browser button. */
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 22px 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e8ecf1;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.refresh-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.refresh-btn__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--green);
+}
+
+.refresh-btn__label {
+  line-height: 1;
+}
+
 /* Two-tier header: small uppercase eyebrow over a larger title. */
 .shelf-head {
   display: grid;
@@ -708,38 +743,38 @@ body.debug-on .status-strip {
   --ambient-art-url: none;
 }
 
-/* Ambient is a full-bleed room display: when active it covers the whole viewport
-   (mirroring .view-now.is-visible) so nothing in the .app column — side margins,
-   bottom padding, or the fixed ambient-bg behind it — shows as a gap/bar. */
+/* Ambient is a permanent full-bleed room display (no fullscreen toggle). When
+   active we kill any chrome behind the fixed stage — nav, ambient-bg, the pill,
+   and any side/bottom padding on .app — so nothing can leak as a bar at the edge. */
+body[data-view="ambient"] .nav,
+body[data-view="ambient"] .ambient-bg,
+body[data-view="ambient"] .np-pill {
+  display: none !important;
+}
+
+body[data-view="ambient"] .app {
+  width: 100%;
+  margin: 0;
+  padding: 0 !important;
+}
+
 .ambient-view.is-visible {
   position: fixed;
   inset: 0;
-  z-index: 15;
+  z-index: 50;
+  background: #04060b;
 }
 
 .ambient-stage {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 100vh;
-  overflow: hidden;
-  border-radius: 0;
-  isolation: isolate;
-  background: linear-gradient(135deg, #060912, #0c111c 48%, #05080d);
-}
-
-/* Fullscreen: fill the viewport edge-to-edge. We target both :fullscreen (modern)
-   and a JS-applied .is-fullscreen class (older TV Blink that mishandles :fullscreen).
-   The stage's absolutely-positioned children — controls + metadata bubble — ride
-   along automatically since the stage is their containing block. */
-.ambient-stage:fullscreen,
-.ambient-stage.is-fullscreen {
   position: fixed;
   inset: 0;
   width: 100vw;
   height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   border-radius: 0;
+  isolation: isolate;
+  background: linear-gradient(135deg, #060912, #0c111c 48%, #05080d);
 }
 
 .ambient-stage > .ambient-room,
@@ -884,92 +919,139 @@ body.debug-on .status-strip {
     color-mix(in oklab, var(--ambient-accent-b) 50%, transparent));
 }
 
-.np-bubble {
+/* === Scene now-playing card ===
+   A real mini player floating top-right of the Scene view: art + title/artist,
+   progress, and transport controls so the user can manage music without leaving
+   Scene. Uses solid surfaces (no big backdrop-filter) for the TV GPU. */
+.scene-np {
   position: absolute;
+  top: 48px;
+  right: 48px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(440px, 38vw);
+  padding: 18px 20px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  background: rgba(8, 11, 18, 0.72);
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.5);
+}
+
+.scene-np__row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  max-width: 420px;
-  padding: 12px 20px 12px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: rgba(10, 14, 22, 0.62);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
-  transition: top 1200ms ease, bottom 1200ms ease, left 1200ms ease, right 1200ms ease, opacity 380ms ease;
-  z-index: 4;
-}
-
-.np-bubble[data-corner="bl"] { bottom: 64px; left: 64px; top: auto; right: auto; }
-.np-bubble[data-corner="br"] { bottom: 64px; right: 64px; top: auto; left: auto; }
-.np-bubble[data-corner="tl"] { top: 64px; left: 64px; bottom: auto; right: auto; }
-.np-bubble[data-corner="tr"] { top: 64px; right: 64px; bottom: auto; left: auto; }
-
-.np-bubble img {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  object-fit: cover;
-  background: #111824;
-  flex-shrink: 0;
-}
-
-.np-bubble__meta {
+  gap: 14px;
   min-width: 0;
 }
 
-.np-bubble__title {
+.scene-np__art {
+  flex-shrink: 0;
+  display: block;
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111824;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.scene-np__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.scene-np__meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.scene-np__title {
   margin: 0;
-  font-size: 1.05rem;
-  font-weight: 900;
+  font-family: var(--font-display);
+  font-size: 1.08rem;
+  font-weight: 800;
   color: #e8ecf1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
 }
 
-.np-bubble__artist {
+.scene-np__artist {
   margin: 4px 0 0;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
 }
 
-/* Scene bubble: text-only, calm, gently breathing */
-.np-bubble--scene {
-  padding: 14px 26px;
-  max-width: 60ch;
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(8, 11, 18, 0.5);
-  animation: scene-breath 9s ease-in-out infinite;
+.scene-np__progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.np-bubble--scene .np-bubble__title {
+.scene-np__track {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.scene-np__fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: var(--green);
+  transition: width 800ms linear;
+}
+
+.scene-np__time {
+  font-size: 0.78rem;
   font-weight: 700;
-  max-width: 52ch;
+  letter-spacing: 0.03em;
+  color: rgba(232, 236, 241, 0.85);
+  font-variant-numeric: tabular-nums;
 }
 
-.np-bubble--scene .np-bubble__artist {
-  max-width: 52ch;
+.scene-np__controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
-@keyframes scene-breath {
-  0%, 100% { filter: brightness(0.82); opacity: 0.78; }
-  50%      { filter: brightness(1.06); opacity: 1; }
+.scene-np__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8ecf1;
+  cursor: pointer;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .np-bubble--scene {
-    animation: none;
-    filter: none;
-    opacity: 1;
-  }
+.scene-np__btn svg { width: 20px; height: 20px; }
+
+.scene-np__btn--primary {
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  background: var(--green);
+  color: #07100a;
 }
+
+.scene-np__btn--primary svg { width: 24px; height: 24px; }
 
 /* === Visualizer mode === */
 .ambient-visualizer {
@@ -1288,21 +1370,21 @@ button.is-active {
 
 /* === Reserve space for the floating NP pill === */
 body.has-pill .app {
-  padding-bottom: 144px;
+  padding-bottom: 124px;
 }
 
 /* === Floating now-playing pill === */
 .np-pill {
   position: fixed;
   left: 50%;
-  bottom: 24px;
+  bottom: 20px;
   transform: translateX(-50%);
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: 14px;
-  width: min(960px, calc(100vw - 80px));
-  padding: 8px 14px 8px 10px;
+  gap: 12px;
+  width: min(880px, calc(100vw - 80px));
+  padding: 6px 12px 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   background: rgba(12, 16, 24, 0.78);
@@ -1355,8 +1437,8 @@ body.has-pill .app {
 .np-pill__art {
   display: block;
   flex-shrink: 0;
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   overflow: hidden;
   background: #111824;
@@ -1479,9 +1561,9 @@ body.has-pill .app {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
-  min-height: 48px;
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
   padding: 0;
   border-radius: 50%;
   border: 2px solid transparent;
@@ -1490,29 +1572,34 @@ body.has-pill .app {
 }
 
 .np-pill__btn svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
 }
 
 .np-pill__btn--primary {
   background: var(--green);
   color: #07100a;
-  width: 54px;
-  height: 54px;
-  min-height: 54px;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
 }
 
 .np-pill__btn--primary svg {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
 }
 
 /* Shuffle/repeat are secondary toggles — smaller than the transport buttons, and
    when on they get an accent ring/tint (reserve the solid green fill for play). */
 .np-pill__btn--toggle {
-  width: 42px;
-  height: 42px;
-  min-height: 42px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+}
+
+.np-pill__btn--toggle svg {
+  width: 18px;
+  height: 18px;
 }
 
 .np-pill__btn--toggle svg {
@@ -2130,37 +2217,6 @@ body.is-phone-pair {
   color: #07100a;
 }
 
-/* Fullscreen toggle lives in the modes row; icon + label, with the icon swapping
-   between enter/exit based on the live fullscreen state. */
-.ambient-fullscreen-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.ambient-fullscreen-btn__icon {
-  width: 20px;
-  height: 20px;
-  flex: none;
-}
-
-.ambient-fullscreen-btn__icon--exit {
-  display: none;
-}
-
-.ambient-fullscreen-btn.is-fullscreen .ambient-fullscreen-btn__icon--enter {
-  display: none;
-}
-
-.ambient-fullscreen-btn.is-fullscreen .ambient-fullscreen-btn__icon--exit {
-  display: inline-block;
-}
-
-.ambient-fullscreen-btn__label {
-  font-size: 0.92rem;
-  letter-spacing: 0.01em;
-}
-
 .ambient-controls__transport .transport-btn {
   width: 56px;
   height: 56px;
@@ -2720,7 +2776,7 @@ body.is-phone-pair {
   .ambient-room__art,
   .ambient-visualizer__art,
   .ambient-visualizer__art::after,
-  .np-bubble {
+  .scene-np {
     animation: none !important;
     transition: opacity 80ms linear !important;
   }

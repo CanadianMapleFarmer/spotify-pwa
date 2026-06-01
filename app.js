@@ -38,7 +38,6 @@ const AMBIENT_MODE_LABELS = {
 };
 // Scene metadata bubble drifts only between the top corners so it never collides
 // with the control cluster anchored bottom-left.
-const BUBBLE_CORNERS = ["tl", "tr"];
 
 // Screensaver scenery, tried in order. Local files (drop your own loops into
 // public/ambient/) win first; the hotlinked city loops are a best-effort
@@ -96,8 +95,6 @@ const state = {
   remoteEvents: [],
   debugVisible: false,
   paletteCache: { url: "", palette: null },
-  bubbleCornerIndex: 0,
-  bubbleCornerTimer: 0,
   pillDimTimer: 0,
   visualizerRaf: 0,
   visualizerPhase: 0,
@@ -150,9 +147,13 @@ const elements = {
   ambientTitle: document.querySelector("#ambientTitle"),
   ambientSubtitle: document.querySelector("#ambientSubtitle"),
   ambientRoomArt: document.querySelector("#ambientRoomArt"),
-  ambientBubble: document.querySelector("#ambientBubble"),
-  ambientBubbleTitle: document.querySelector("#ambientBubbleTitle"),
-  ambientBubbleArtist: document.querySelector("#ambientBubbleArtist"),
+  sceneNp: document.querySelector("#sceneNp"),
+  sceneNpArt: document.querySelector("#sceneNpArt"),
+  sceneNpTitle: document.querySelector("#sceneNpTitle"),
+  sceneNpArtist: document.querySelector("#sceneNpArtist"),
+  sceneNpProgressFill: document.querySelector("#sceneNpProgressFill"),
+  sceneNpTime: document.querySelector("#sceneNpTime"),
+  sceneNpPlayBtn: document.querySelector("#sceneNpPlayBtn"),
   ambientDriftA: document.querySelector("#ambientDriftA"),
   ambientDriftB: document.querySelector("#ambientDriftB"),
   ambientDriftC: document.querySelector("#ambientDriftC"),
@@ -166,7 +167,6 @@ const elements = {
   sceneNatureBtn: document.querySelector("#sceneNatureBtn"),
   sceneSkylineBtn: document.querySelector("#sceneSkylineBtn"),
   sceneSkipBtn: document.querySelector("#sceneSkipBtn"),
-  ambientFullscreenBtn: document.querySelector("#ambientFullscreenBtn"),
   ambientControls: document.querySelector("#ambientControls"),
   ambientProgressFill: document.querySelector("#ambientProgressFill"),
   ambientProgressTime: document.querySelector("#ambientProgressTime"),
@@ -208,7 +208,6 @@ const actions = {
   setAmbientMode,
   selectSceneCategory,
   skipSceneClip,
-  toggleAmbientFullscreen,
   playCollection,
   toggleCollectionShuffle,
   collectionBack,
@@ -282,7 +281,6 @@ function init() {
   renderTransportState();
   renderAmbient();
   startProgressTimer();
-  startBubbleCornerTimer();
   scheduleSpotifyPlayerCreation("app init");
   focusFirst();
 
@@ -1208,12 +1206,6 @@ function handleBack() {
     cancelExit();
     return;
   }
-  // In fullscreen ambient, Back should drop out of fullscreen first, not navigate.
-  if (document.fullscreenElement) {
-    exitAmbientFullscreen();
-    log("Back: exited fullscreen.");
-    return;
-  }
   if (state.currentView === "collection") {
     collectionBack();
     log("Back: returned to collection source.");
@@ -1352,6 +1344,9 @@ function setView(viewOrEvent) {
     state.previousView = state.currentView;
   }
   state.currentView = nextView;
+  // CSS hook: lets us scope rules to the current view (e.g. fully suppress the
+  // .app column while ambient is up so its padding can't leak as a bottom bar).
+  document.body.dataset.view = nextView;
   for (const section of document.querySelectorAll(".view")) {
     section.classList.toggle("is-visible", section.id === `view-${nextView}`);
   }
@@ -1411,49 +1406,9 @@ function cycleAmbientMode(direction) {
   setAmbientMode(AMBIENT_MODES[next]);
 }
 
-// Fullscreen the whole ambient stage so the active mode (Room/Visualizer/Scene)
-// fills the screen while its absolutely-positioned controls + metadata bubble stay
-// usable. We fullscreen the stage (not the document) so those overlays come along.
-function toggleAmbientFullscreen() {
-  if (document.fullscreenElement) {
-    exitAmbientFullscreen();
-  } else {
-    enterAmbientFullscreen();
-  }
-}
-
-function enterAmbientFullscreen() {
-  const stage = elements.ambientStage;
-  if (!stage || !stage.requestFullscreen) {
-    log("Fullscreen not supported on this device.", "warn");
-    return;
-  }
-  stage.requestFullscreen().catch((error) => {
-    logError("Fullscreen request failed", error);
-  });
-}
-
-function exitAmbientFullscreen() {
-  if (!document.fullscreenElement) return;
-  if (document.exitFullscreen) {
-    document.exitFullscreen().catch(() => {});
-  }
-}
-
-// Mirror the live fullscreen state onto the toggle button (icon swap + a11y) and
-// the stage (CSS hook for TVs whose Blink lacks reliable :fullscreen styling).
-function reflectFullscreen() {
-  const isFull = Boolean(document.fullscreenElement);
-  const btn = elements.ambientFullscreenBtn;
-  if (btn) {
-    btn.classList.toggle("is-fullscreen", isFull);
-    btn.setAttribute("aria-pressed", isFull ? "true" : "false");
-    btn.setAttribute("aria-label", isFull ? "Exit fullscreen" : "Enter fullscreen");
-  }
-  elements.ambientStage?.classList.toggle("is-fullscreen", isFull);
-}
-
-document.addEventListener("fullscreenchange", reflectFullscreen);
+// Ambient is always presented as a full-bleed room display now — there's no
+// separate fullscreen toggle. CSS makes the stage cover the viewport whenever
+// .ambient-view.is-visible is up.
 
 function testStorage() {
   const value = new Date().toISOString();
@@ -2116,6 +2071,12 @@ function renderProgress() {
   if (elements.ambientProgressTime) {
     elements.ambientProgressTime.textContent = timeText;
   }
+  if (elements.sceneNpProgressFill) {
+    elements.sceneNpProgressFill.style.width = `${percent}%`;
+  }
+  if (elements.sceneNpTime) {
+    elements.sceneNpTime.textContent = timeText;
+  }
 }
 
 function renderAmbient() {
@@ -2151,11 +2112,18 @@ function renderAmbient() {
     }
   }
 
-  if (elements.ambientBubbleTitle) {
-    elements.ambientBubbleTitle.textContent = now?.title || "Nothing playing";
+  if (elements.sceneNpTitle) {
+    elements.sceneNpTitle.textContent = now?.title || "Nothing playing";
   }
-  if (elements.ambientBubbleArtist) {
-    elements.ambientBubbleArtist.textContent = now?.artist || "";
+  if (elements.sceneNpArtist) {
+    elements.sceneNpArtist.textContent = now?.artist || "";
+  }
+  if (elements.sceneNpArt) {
+    if (image) {
+      elements.sceneNpArt.src = image;
+    } else {
+      elements.sceneNpArt.removeAttribute("src");
+    }
   }
 
   if (elements.ambientVisualizerArt) {
@@ -2302,15 +2270,6 @@ function handleAmbientModeArrow(direction) {
   return true;
 }
 
-function startBubbleCornerTimer() {
-  if (state.bubbleCornerTimer) window.clearInterval(state.bubbleCornerTimer);
-  state.bubbleCornerTimer = window.setInterval(() => {
-    if (!elements.ambientBubble) return;
-    state.bubbleCornerIndex = (state.bubbleCornerIndex + 1) % BUBBLE_CORNERS.length;
-    elements.ambientBubble.dataset.corner = BUBBLE_CORNERS[state.bubbleCornerIndex];
-  }, 90000);
-}
-
 // === Scene (screensaver) playback =============================================
 // Scene runs an A/B pair of <video> elements so the next clip can preload while
 // the current one plays; we crossfade by toggling .ambient-screensaver[data-active]
@@ -2324,6 +2283,28 @@ function hasPexelsKey() {
   } catch {
     return false;
   }
+}
+
+// VIDAA/Hisense's audio focus is greedy: when a Pexels clip's audio track enters
+// the pipeline (even muted) it can steal focus from the Spotify SDK and pause it.
+// We can't strip the audio track of a remote MP4 at runtime, so when we start a
+// Scene clip while Spotify was playing, we ask the SDK to resume() shortly after.
+// Two attempts cover the race where the first resume() loses to the focus-grab.
+function nudgeSpotifyResume() {
+  // Only nudge if Spotify was actively playing right before the clip started.
+  // state.nowPlaying.paused is updated by the SDK's player_state_changed listener.
+  const wasPlaying = state.nowPlaying && !state.nowPlaying.paused;
+  if (!wasPlaying) return;
+  const player = state.spotifyPlayer;
+  if (!player || typeof player.resume !== "function") return;
+  const tryResume = () => {
+    player.getCurrentState?.().then((current) => {
+      if (!current || !current.paused) return;
+      player.resume().catch(() => {});
+    }).catch(() => {});
+  };
+  window.setTimeout(tryResume, 700);
+  window.setTimeout(tryResume, 1600);
 }
 
 function sceneVideoEls() {
@@ -2387,6 +2368,7 @@ function syncAmbientVideo() {
       advanceSceneClip(token);
     };
     current.play().catch(() => {});
+    nudgeSpotifyResume();
     return;
   }
   startScenePlayback();
@@ -2493,6 +2475,9 @@ function advanceSceneClip(token, attempt = 0) {
       if (token !== state.sceneToken) return;
       advanceSceneClip(token);
     };
+    // TV firmware can steal audio focus when this clip's audio track lands —
+    // re-claim it for the Spotify SDK so music doesn't pause.
+    nudgeSpotifyResume();
     log(`Scene clip playing (${state.sceneSource}): ${url}`, "success");
   };
 
