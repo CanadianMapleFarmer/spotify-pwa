@@ -1764,6 +1764,10 @@ body.has-pill .app {
   overflow-wrap: anywhere;
 }
 
+.diagnostics__col dd.imgseq-err {
+  color: #ff8a8a;
+}
+
 .diagnostics__col output {
   display: block;
   padding: 10px;

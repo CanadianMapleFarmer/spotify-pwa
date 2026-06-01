@@ -43,10 +43,22 @@ function getFirestoreClient() {
 
 // In-memory cache of the latest library list. Refreshed on Scene entry.
 let _sceneLibraryCache = null;
+// The Firebase compat scripts load with `defer`; if the user enters Scene mode
+// quickly after boot, getFirestoreClient() may return null on first try. Poll
+// for a short window before giving up so we don't surface a spurious error.
+async function waitForFirestore(timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const fs = getFirestoreClient();
+    if (fs) return fs;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return null;
+}
 async function loadSceneLibrary() {
   if (_sceneLibraryCache) return _sceneLibraryCache;
-  const fs = getFirestoreClient();
-  if (!fs) throw new Error("Firestore client not available");
+  const fs = await waitForFirestore();
+  if (!fs) throw new Error("Firestore SDK did not load (network blocked?)");
   const snap = await fs.collection("sceneClips").get();
   const byCategory = { nature: [], skyline: [] };
   snap.forEach((doc) => {
@@ -148,6 +160,17 @@ const state = {
   trackMenuReturnFocus: null,
   userPlaylists: null, // cached editable playlists for the add-to-playlist picker
   upNextTrackId: "", // nowPlaying id the up-next card was last shown for (once per song)
+  imgseqDiag: {
+    library: "",
+    clipId: "",
+    sourceUrl: "",
+    frameIndex: -1,
+    frameCount: 0,
+    fps: 0,
+    lastFrameStatus: "",
+    lastError: "",
+    startedAt: 0,
+  },
 };
 
 const elements = {
@@ -207,6 +230,7 @@ const elements = {
   ambientVideo: document.querySelector("#ambientVideo"),
   ambientVideoB: document.querySelector("#ambientVideoB"),
   ambientImgSeq: document.querySelector("#ambientImgSeq"),
+  imgseqFacts: document.querySelector("#imgseqFacts"),
   ambientSceneControls: document.querySelector("#ambientSceneControls"),
   sceneNatureBtn: document.querySelector("#sceneNatureBtn"),
   sceneSkylineBtn: document.querySelector("#sceneSkylineBtn"),
@@ -2836,6 +2860,7 @@ function applyDebugVisibility() {
   if (elements.diagnostics) {
     elements.diagnostics.hidden = !state.debugVisible;
   }
+  if (state.debugVisible) updateImgseqDiag();
   if (elements.toggleDebugView) {
     elements.toggleDebugView.setAttribute("aria-checked", state.debugVisible ? "true" : "false");
   }
@@ -3101,34 +3126,90 @@ function stopImageSequence() {
   }
 }
 
+// Diagnostics for the image-sequence path. Surfaced in the Debug overlay so we
+// can see on the TV exactly which clip is loading, how many frames it has, and
+// where the renderer is in the cycle. Merging-style writes so callers only set
+// the fields they know about.
+function setImgseqDiag(patch) {
+  Object.assign(state.imgseqDiag, patch);
+  updateImgseqDiag();
+}
+
+function updateImgseqDiag() {
+  const el = elements.imgseqFacts;
+  if (!el) return;
+  const d = state.imgseqDiag || {};
+  const frame = d.frameIndex >= 0 && d.frameCount
+    ? `${d.frameIndex + 1} / ${d.frameCount} @ ${d.fps || "?"}fps`
+    : "—";
+  const errorRow = d.lastError ? `<dt>Error</dt><dd class="imgseq-err">${escapeHtml(d.lastError)}</dd>` : "";
+  el.innerHTML =
+    `<dt>Library</dt><dd>${escapeHtml(d.library || "—")}</dd>` +
+    `<dt>Clip</dt><dd>${escapeHtml(d.clipId || "—")}</dd>` +
+    `<dt>Frame</dt><dd>${frame}</dd>` +
+    `<dt>Last frame</dt><dd>${escapeHtml(d.lastFrameStatus || "—")}</dd>` +
+    errorRow;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 async function playImageSequence(clip, token) {
   stopImageSequence();
   const img = elements.ambientImgSeq;
   if (!img || !clip || !clip.frames?.length) throw new Error("No frames");
 
-  // Preload the first few frames so the cycle doesn't blink on startup.
-  // We rely on browser HTTP cache for the rest as we cycle through.
+  setImgseqDiag({
+    clipId: clip.id,
+    frameCount: clip.frames.length,
+    fps: clip.fps || 10,
+    frameIndex: -1,
+    sourceUrl: clip.frames[0],
+    lastFrameStatus: "preloading…",
+    lastError: "",
+    startedAt: Date.now(),
+  });
+
+  // Preload the first few frames so the cycle doesn't blink on startup. Track
+  // how many preloads succeed vs fail so the debug panel surfaces network
+  // issues (e.g. blocked GCS hostname, expired ACL).
   const preloadCount = Math.min(6, clip.frames.length);
-  await Promise.all(clip.frames.slice(0, preloadCount).map((url) => new Promise((resolve) => {
+  const preloadResults = await Promise.all(clip.frames.slice(0, preloadCount).map((url) => new Promise((resolve) => {
     const probe = new Image();
-    probe.onload = resolve;
-    probe.onerror = resolve;
+    probe.onload = () => resolve(true);
+    probe.onerror = () => resolve(false);
     probe.src = url;
   })));
   if (state.sceneToken !== token) return;
+  const okPreloads = preloadResults.filter(Boolean).length;
+  if (okPreloads === 0) {
+    setImgseqDiag({ lastError: `0/${preloadCount} preloads OK (frames unreachable)` });
+    throw new Error(`Frames unreachable (0/${preloadCount} preloads succeeded)`);
+  }
 
   // Mark the screensaver as imgseq-mode so CSS hides the <video> elements and
   // shows the <img>. setSceneStripStatus advertises which path is live.
   if (elements.ambientScreensaver) elements.ambientScreensaver.dataset.video = "imgseq";
   setSceneStripStatus("strip", `imgseq ${clip.frames.length}f@${clip.fps}fps`);
+  setImgseqDiag({ lastFrameStatus: `preloaded ${okPreloads}/${preloadCount}` });
+
+  // Surface frame load issues to the diag panel; one failed swap shouldn't kill
+  // the cycle, but a sustained failure run is the kind of thing we want visible.
+  img.onload = () => setImgseqDiag({ lastFrameStatus: "ok" });
+  img.onerror = () => setImgseqDiag({ lastFrameStatus: "frame error", lastError: `frame load failed: ${img.src}` });
 
   const interval = Math.max(60, Math.round(1000 / (clip.fps || 10)));
   let i = 0;
   img.src = clip.frames[0];
+  setImgseqDiag({ frameIndex: 0 });
   state.sceneImageTimer = window.setInterval(() => {
     if (state.sceneToken !== token) { stopImageSequence(); return; }
     i = (i + 1) % clip.frames.length;
     img.src = clip.frames[i];
+    state.imgseqDiag.frameIndex = i;
+    // Throttle the DOM update — touching innerHTML at 10fps is fine but pointless.
+    if (i % 10 === 0) updateImgseqDiag();
   }, interval);
 }
 
@@ -3193,16 +3274,21 @@ async function startImageSequencePlayback() {
   // makes this run a no-op at the next checkpoint — no polling watcher needed.
   try {
     setSceneStripStatus("strip", "loading library…");
+    setImgseqDiag({ library: "loading…", lastError: "", clipId: "", frameIndex: -1, frameCount: 0 });
     const library = await loadSceneLibrary();
     if (state.sceneToken !== token) return;
+    setImgseqDiag({ library: `nature:${(library.nature || []).length} skyline:${(library.skyline || []).length}` });
     const clip = pickLibraryClip(library);
     if (!clip) {
-      log("Scene: image-sequence library is empty; falling back to <video>.", "warn");
-      showToast("Scene library empty. Deploy the function or use video mode.", "warn");
+      // Why not fall back to <video>: that engages the firmware decoder, which
+      // pauses Spotify on this TV. Better to sit on the generative drift scene
+      // and let the user see what went wrong than to silently kill the music.
+      const msg = "Scene library has no clips for this category.";
+      log(`Scene imgseq: ${msg}`, "warn");
+      showToast(msg, "warn");
       setSceneStripStatus("plain", "library empty");
-      // Fall through to the regular <video> path.
-      state.sceneUseImageSequence = false;
-      startScenePlayback();
+      setImgseqDiag({ lastError: "library empty for category" });
+      screensaver.dataset.video = "off";
       return;
     }
     await playImageSequence(clip, token);
@@ -3217,11 +3303,16 @@ async function startImageSequencePlayback() {
     }, Math.max(8000, cycleMs * 2));
   } catch (err) {
     if (state.sceneToken !== token) return;
-    log(`Scene image-sequence failed: ${err?.message || err}; falling back.`, "warn");
-    showToast(`Scene library load failed: ${err?.message || err}`, "warn");
-    setSceneStripStatus("error", err?.message);
-    state.sceneUseImageSequence = false;
-    startScenePlayback();
+    const msg = err?.message || String(err);
+    log(`Scene imgseq failed: ${msg} (staying on generative scene to keep music playing).`, "warn");
+    showToast(`Imgseq error: ${msg}`, "warn");
+    setSceneStripStatus("error", msg);
+    setImgseqDiag({ lastError: msg });
+    // Crucially: do NOT call startScenePlayback() here. The <video> path
+    // engages the firmware decoder and pauses Spotify on this TV. Drop to the
+    // generative drift scene instead so audio keeps going.
+    screensaver.dataset.video = "off";
+    stopImageSequence();
   }
 }
 
