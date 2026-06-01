@@ -126,6 +126,7 @@ const elements = {
   newReleasesShelf: document.querySelector("#newReleasesShelf"),
   playlistsHomeShelf: document.querySelector("#playlistsHomeShelf"),
   topShelf: document.querySelector("#topShelf"),
+  recentShelf: document.querySelector("#recentShelf"),
   signedOutHero: document.querySelector("#signedOutHero"),
   homeShelves: document.querySelector("#homeShelves"),
   playlistShelf: document.querySelector("#playlistShelf"),
@@ -741,6 +742,7 @@ async function loadHome() {
   const results = await Promise.allSettled([
     spotifyApiJson("/v1/me/playlists?limit=50"),
     spotifyApiJson("/v1/me/top/tracks?limit=18&time_range=medium_term"),
+    spotifyApiJson("/v1/me/player/recently-played?limit=30"),
     spotifyApiJson("/v1/browse/new-releases?limit=18"),
   ]);
   // Total failure (every endpoint rejected) signals a transient token/network
@@ -748,12 +750,18 @@ async function loadHome() {
   if (results.every((result) => result.status === "rejected")) {
     throw results[0].reason || new Error("Home data requests all failed.");
   }
-  const [playlists, top, newReleases] = results;
+  const [playlists, top, recent, newReleases] = results;
   const { own } = splitPlaylists(playlists.value?.items || []);
   renderShelf(elements.playlistsHomeShelf, "Your Playlists", own.slice(0, 18), "playlist", {
     hideIfEmpty: true,
   });
   renderShelf(elements.topShelf, "On Repeat For You", top.value?.items || [], "track", {
+    hideIfEmpty: true,
+  });
+  // Recently-played returns play-history entries ({ track, played_at }) with the
+  // same song repeated; unwrap to the track and dedupe by id so the shelf reads
+  // as "jump back in", not a literal timeline.
+  renderShelf(elements.recentShelf, "Jump Back In", dedupeRecentTracks(recent.value?.items || []), "track", {
     hideIfEmpty: true,
   });
   // Spotify deprecated /recommendations + /browse/featured-playlists, and this
@@ -762,6 +770,18 @@ async function loadHome() {
   renderShelf(elements.newReleasesShelf, "New Releases", newReleases.value?.albums?.items || [], "album", {
     hideIfEmpty: true,
   });
+}
+
+function dedupeRecentTracks(items) {
+  const seen = new Set();
+  const tracks = [];
+  for (const entry of items) {
+    const track = entry?.track;
+    if (!track?.id || seen.has(track.id)) continue;
+    seen.add(track.id);
+    tracks.push(track);
+  }
+  return tracks.slice(0, 18);
 }
 
 // Spotify's first-party mixes carry owner.id === "spotify" and are excluded so
@@ -787,6 +807,7 @@ function toggleSignedOutHero(show) {
 const HOME_SHELVES = [
   ["playlistsHomeShelf", "Your Playlists"],
   ["topShelf", "On Repeat For You"],
+  ["recentShelf", "Jump Back In"],
   ["newReleasesShelf", "New Releases"],
 ];
 

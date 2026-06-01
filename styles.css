@@ -17,6 +17,10 @@
   /* Shared corner radii — tokenized so cards/artwork stay visually consistent. */
   --radius-card: 14px;
   --radius-art: 10px;
+  /* Elevation language — two resting depths so artwork/panels lift consistently
+     and a focused card reads as raised toward the viewer. */
+  --elev-1: 0 12px 28px rgba(0, 0, 0, 0.45);
+  --elev-2: 0 22px 48px rgba(0, 0, 0, 0.6);
 }
 
 * {
@@ -413,9 +417,36 @@ body.debug-on .status-strip {
 
 .shelf-title {
   margin: 0;
-  font-size: 1.55rem;
-  line-height: 1.05;
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2vw, 1.95rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.02;
 }
+
+/* Orchestrated entrance: the header and each shelf rise + fade in a quick
+   stagger when Home/Library becomes visible. Compositor-only (transform +
+   opacity); disabled under the reduced-motion guard below. */
+@keyframes view-rise {
+  from { opacity: 0; transform: translate3d(0, 18px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+
+#view-home.is-visible .section-title,
+#view-home.is-visible .home-shelves .shelf,
+#view-library.is-visible .section-title,
+#view-library.is-visible .shelf {
+  animation: view-rise 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+#view-home.is-visible .home-shelves .shelf:nth-child(1) { animation-delay: 80ms; }
+#view-home.is-visible .home-shelves .shelf:nth-child(2) { animation-delay: 150ms; }
+#view-home.is-visible .home-shelves .shelf:nth-child(3) { animation-delay: 220ms; }
+#view-home.is-visible .home-shelves .shelf:nth-child(4) { animation-delay: 290ms; }
+
+#view-library.is-visible .shelf:nth-child(2) { animation-delay: 80ms; }
+#view-library.is-visible .shelf:nth-child(3) { animation-delay: 150ms; }
+#view-library.is-visible .shelf:nth-child(4) { animation-delay: 220ms; }
 
 .rail {
   display: grid;
@@ -457,7 +488,12 @@ body.debug-on .status-strip {
   object-fit: cover;
   border-radius: var(--radius-art);
   background: #111824;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--elev-1);
+}
+
+.card:focus img,
+.card.is-focused img {
+  box-shadow: var(--elev-2);
 }
 
 .card-title {
@@ -2481,7 +2517,11 @@ body.is-phone-pair {
   }
 
   .view-now.is-visible,
-  .view-now .now-layout {
+  .view-now .now-layout,
+  #view-home.is-visible .section-title,
+  #view-home.is-visible .home-shelves .shelf,
+  #view-library.is-visible .section-title,
+  #view-library.is-visible .shelf {
     animation: none !important;
   }
 
