@@ -25,7 +25,37 @@ const storageKeys = {
   ambientMode: "spotify-pwa.ambient-mode",
   sceneCategory: "spotify-pwa.scene-category",
   sceneStripAudio: "spotify-pwa.scene-strip-audio",
+  sceneImageSequence: "spotify-pwa.scene-image-sequence",
 };
+
+// Image-sequence Scene library: read directly from Firestore (the scheduled
+// Cloud Function populates sceneClips collection weekly). The Firebase compat
+// SDK is loaded in index.html; we lazily grab the client when needed.
+function getFirestoreClient() {
+  try {
+    if (typeof window === "undefined") return null;
+    if (window.firebase?.firestore) return window.firebase.firestore();
+  } catch {}
+  return null;
+}
+
+// In-memory cache of the latest library list. Refreshed on Scene entry.
+let _sceneLibraryCache = null;
+async function loadSceneLibrary() {
+  if (_sceneLibraryCache) return _sceneLibraryCache;
+  const fs = getFirestoreClient();
+  if (!fs) throw new Error("Firestore client not available");
+  const snap = await fs.collection("sceneClips").get();
+  const byCategory = { nature: [], skyline: [] };
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (byCategory[d.category] && Array.isArray(d.frames) && d.frames.length) {
+      byCategory[d.category].push({ id: d.id, frames: d.frames, fps: d.fps || 10 });
+    }
+  });
+  _sceneLibraryCache = byCategory;
+  return byCategory;
+}
 
 const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
 const PAIR_SESSION_COLLECTION = "pairSessions";
@@ -94,6 +124,8 @@ const state = {
   sceneFetchInFlight: false,
   sceneStripAudio: true, // experimental: strip audio from Pexels MP4s via mp4box
   sceneStripBlobs: [], // Object URLs to revoke when leaving Scene
+  sceneUseImageSequence: false, // backend-mode: cycle JPG frames via Cloud Function
+  sceneImageTimer: 0, // setInterval handle for the image-sequence animator
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -166,6 +198,7 @@ const elements = {
   ambientScreensaver: document.querySelector("#ambientScreensaver"),
   ambientVideo: document.querySelector("#ambientVideo"),
   ambientVideoB: document.querySelector("#ambientVideoB"),
+  ambientImgSeq: document.querySelector("#ambientImgSeq"),
   ambientSceneControls: document.querySelector("#ambientSceneControls"),
   sceneNatureBtn: document.querySelector("#sceneNatureBtn"),
   sceneSkylineBtn: document.querySelector("#sceneSkylineBtn"),
@@ -236,6 +269,7 @@ const actions = {
   clearLog,
   toggleDebugView,
   toggleSceneStripAudio,
+  toggleSceneImageSequence,
   cancelExit,
   confirmExit,
 };
@@ -398,11 +432,14 @@ function hydrateUiPreferences() {
     const savedStrip = localStorage.getItem(storageKeys.sceneStripAudio);
     // Default ON (experimental) so the user can flip it off if it misbehaves.
     state.sceneStripAudio = savedStrip === null ? true : savedStrip === "1";
+    const savedImgSeq = localStorage.getItem(storageKeys.sceneImageSequence);
+    state.sceneUseImageSequence = savedImgSeq === "1";
   } catch {
     // localStorage unavailable; defaults already set
   }
   applyDebugVisibility();
   applySceneStripState();
+  applySceneImageSequenceState();
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
@@ -2304,6 +2341,25 @@ function toggleDebugView() {
   log(`Debug view ${state.debugVisible ? "enabled" : "disabled"}.`);
 }
 
+function toggleSceneImageSequence() {
+  state.sceneUseImageSequence = !state.sceneUseImageSequence;
+  try {
+    localStorage.setItem(storageKeys.sceneImageSequence, state.sceneUseImageSequence ? "1" : "0");
+  } catch {}
+  applySceneImageSequenceState();
+  log(`Scene image-sequence mode ${state.sceneUseImageSequence ? "enabled" : "disabled"}.`);
+  if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
+    syncAmbientVideo();
+  }
+}
+
+function applySceneImageSequenceState() {
+  const btn = document.getElementById("toggleSceneImgSeq");
+  const label = document.getElementById("toggleSceneImgSeqState");
+  if (btn) btn.setAttribute("aria-checked", state.sceneUseImageSequence ? "true" : "false");
+  if (label) label.textContent = state.sceneUseImageSequence ? "On" : "Off";
+}
+
 function toggleSceneStripAudio() {
   state.sceneStripAudio = !state.sceneStripAudio;
   try {
@@ -2580,6 +2636,60 @@ function clearSceneStripBlobs() {
   state.sceneStripBlobs = [];
 }
 
+// === Image-sequence Scene renderer ==========================================
+// The TV's firmware pauses other media when a <video> decodes. Image sequences
+// don't engage that pipeline at all — we just swap an <img> element's src at
+// the source fps, which the renderer treats like any other image update.
+//
+// We rely on the Cloud Function-curated library in Firestore: each "clip" is
+// an array of pre-generated JPG URLs at a known fps. Local cycling is cheap.
+
+function stopImageSequence() {
+  if (state.sceneImageTimer) {
+    window.clearInterval(state.sceneImageTimer);
+    state.sceneImageTimer = 0;
+  }
+}
+
+async function playImageSequence(clip, tokenRef) {
+  stopImageSequence();
+  const img = elements.ambientImgSeq;
+  if (!img || !clip || !clip.frames?.length) throw new Error("No frames");
+
+  // Preload the first few frames so the cycle doesn't blink on startup.
+  // We rely on browser HTTP cache for the rest as we cycle through.
+  const preloadCount = Math.min(6, clip.frames.length);
+  await Promise.all(clip.frames.slice(0, preloadCount).map((url) => new Promise((resolve) => {
+    const probe = new Image();
+    probe.onload = resolve;
+    probe.onerror = resolve;
+    probe.src = url;
+  })));
+  if (tokenRef.cancelled) return;
+
+  // Mark the screensaver as imgseq-mode so CSS hides the <video> elements and
+  // shows the <img>. setSceneStripStatus advertises which path is live.
+  if (elements.ambientScreensaver) elements.ambientScreensaver.dataset.video = "imgseq";
+  setSceneStripStatus("strip", `imgseq ${clip.frames.length}f@${clip.fps}fps`);
+
+  const interval = Math.max(60, Math.round(1000 / (clip.fps || 10)));
+  let i = 0;
+  img.src = clip.frames[0];
+  state.sceneImageTimer = window.setInterval(() => {
+    if (tokenRef.cancelled) { stopImageSequence(); return; }
+    i = (i + 1) % clip.frames.length;
+    img.src = clip.frames[i];
+  }, interval);
+}
+
+// Pick a random clip from the loaded library matching the user's category.
+function pickLibraryClip(library) {
+  const cat = state.sceneCategory || "nature";
+  const list = library[cat] || [];
+  if (!list.length) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
 // Called by setAmbientMode + setView. Decides whether Scene should be running and
 // kicks off (or stops) playback. Stopping pauses both elements without tearing
 // down sources, so returning to Scene resumes quickly.
@@ -2593,8 +2703,16 @@ function syncAmbientVideo() {
     state.sceneToken += 1;
     try { a.pause(); } catch {}
     try { b?.pause(); } catch {}
+    stopImageSequence();
     clearSceneStripBlobs();
     setSceneStripStatus("idle");
+    return;
+  }
+
+  // Image-sequence path: bypass <video> entirely, animate <img> frames from
+  // the pre-converted library. The Cloud Function refreshes this set weekly.
+  if (state.sceneUseImageSequence) {
+    startImageSequencePlayback();
     return;
   }
   // Already running with a visible clip — resume it. Re-arm the onended advance
@@ -2611,6 +2729,55 @@ function syncAmbientVideo() {
     return;
   }
   startScenePlayback();
+}
+
+// Image-sequence Scene: pull the pre-converted library from Firestore and pick
+// a random clip in the user's category. We cycle frames until the user leaves
+// Scene or category changes (token bump cancels the loop), then pick another.
+async function startImageSequencePlayback() {
+  const token = ++state.sceneToken;
+  const screensaver = elements.ambientScreensaver;
+  if (!screensaver) return;
+
+  // Stale-cancel guard: if user leaves Scene mid-load, we drop everything.
+  const tokenRef = { cancelled: false };
+  const watcher = window.setInterval(() => {
+    if (state.sceneToken !== token) { tokenRef.cancelled = true; window.clearInterval(watcher); }
+  }, 500);
+
+  try {
+    setSceneStripStatus("strip", "loading library…");
+    const library = await loadSceneLibrary();
+    if (tokenRef.cancelled) return;
+    const clip = pickLibraryClip(library);
+    if (!clip) {
+      window.clearInterval(watcher);
+      log("Scene: image-sequence library is empty; falling back to <video>.", "warn");
+      showToast("Scene library empty. Deploy the function or use video mode.", "warn");
+      setSceneStripStatus("plain", "library empty");
+      // Fall through to the regular <video> path.
+      state.sceneUseImageSequence = false;
+      startScenePlayback();
+      return;
+    }
+    await playImageSequence(clip, tokenRef);
+
+    // When this clip's frames have cycled a few times, advance to another one.
+    // Random advance keeps it feeling like the old multi-clip rotation.
+    const cycleMs = (clip.frames.length / (clip.fps || 10)) * 1000;
+    window.setTimeout(() => {
+      if (tokenRef.cancelled) return;
+      // Recurse to pick a new random clip.
+      startImageSequencePlayback();
+    }, Math.max(8000, cycleMs * 2));
+  } catch (err) {
+    window.clearInterval(watcher);
+    log(`Scene image-sequence failed: ${err?.message || err}; falling back.`, "warn");
+    showToast(`Scene library load failed: ${err?.message || err}`, "warn");
+    setSceneStripStatus("error", err?.message);
+    state.sceneUseImageSequence = false;
+    startScenePlayback();
+  }
 }
 
 // Build (or rebuild) the in-memory playlist for the current category, then begin

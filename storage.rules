@@ -1,0 +1,19 @@
+rules_version = '2';
+
+// Scene frame JPGs are written by the convertSceneClip Cloud Function (which
+// runs with the Admin SDK and bypasses these rules). They're read directly
+// from the browser at storage.googleapis.com — read access is granted on the
+// uploaded objects via public:true, not through these rules — but we still
+// allow public read here for completeness. No client writes; uploads are
+// strictly server-side.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /scene-frames/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

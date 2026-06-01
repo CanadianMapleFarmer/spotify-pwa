@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=35">
+    <link rel="stylesheet" href="/styles.css?v=36">
     <meta http-equiv="Cache-Control" content="no-store">
   </head>
   <body>
@@ -222,6 +222,11 @@
           <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-video="off">
             <video class="ambient-video" id="ambientVideo" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
             <video class="ambient-video ambient-video--b" id="ambientVideoB" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
+            <!-- Image-sequence renderer: when the toggle is on, the Cloud
+                 Function returns a list of JPG frame URLs and we animate this
+                 <img> by swapping src. No <video> decoder engages, so the TV's
+                 firmware doesn't pause Spotify. Hidden via data-mode until in use. -->
+            <img class="ambient-imgseq" id="ambientImgSeq" alt="" aria-hidden="true">
             <span class="ambient-video__scrim" aria-hidden="true"></span>
             <span class="drift drift--a" id="ambientDriftA"></span>
             <span class="drift drift--b" id="ambientDriftB"></span>
@@ -366,9 +371,14 @@
         <div class="settings-section">
           <p class="eyebrow">Ambient</p>
           <h3 class="settings-section__title">Scene playback</h3>
+          <button class="focusable settings-toggle" id="toggleSceneImgSeq" data-action="toggleSceneImageSequence" role="switch" aria-checked="false">
+            <span class="settings-toggle__label">Image-sequence Scene mode (recommended for TV)</span>
+            <span class="settings-toggle__hint">Use a pre-converted JPG sequence from Firebase instead of an MP4. This is the only path that lets Scene and Spotify both play on this TV. Requires the Cloud Function to be deployed (`firebase deploy --only functions,firestore,storage`) and the weekly cron to have run at least once.</span>
+            <span class="settings-toggle__state" id="toggleSceneImgSeqState">Off</span>
+          </button>
           <button class="focusable settings-toggle" id="toggleSceneStrip" data-action="toggleSceneStripAudio" role="switch" aria-checked="true">
-            <span class="settings-toggle__label">Strip audio from Scene clips (experimental)</span>
-            <span class="settings-toggle__hint">Demux Pexels MP4s in-browser so the TV's audio decoder never sees a competing track and Spotify can keep playing while the scene plays. If clips fail to load on your TV, turn this off to use the original URL.</span>
+            <span class="settings-toggle__label">Strip audio from MP4 (experimental, fallback)</span>
+            <span class="settings-toggle__hint">When image-sequence mode is off, demux Pexels MP4s in-browser so the video element never gets an audio track. Confirmed working on the TV but doesn't solve the firmware issue — only image-sequence mode does.</span>
             <span class="settings-toggle__state" id="toggleSceneStripState">On</span>
           </button>
         </div>
@@ -470,6 +480,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=35" type="module"></script>
+    <script src="/app.js?v=36" type="module"></script>
   </body>
 </html>

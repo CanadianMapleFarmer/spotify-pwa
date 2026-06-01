@@ -2272,6 +2272,28 @@ body.is-phone-pair {
   opacity: 1;
 }
 
+/* Image-sequence renderer (only shown when data-video="imgseq"). It overlays the
+   video elements; data-mode swap keeps just one path visible at a time. */
+.ambient-imgseq {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 600ms ease;
+}
+
+.ambient-screensaver[data-video="imgseq"] .ambient-imgseq {
+  opacity: 1;
+}
+
+/* Hide the <video> elements completely when image-sequence is the active
+   renderer so they never engage the firmware's video pipeline. */
+.ambient-screensaver[data-video="imgseq"] .ambient-video {
+  display: none;
+}
+
 .ambient-video__scrim {
   position: absolute;
   inset: 0;

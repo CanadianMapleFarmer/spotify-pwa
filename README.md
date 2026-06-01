@@ -89,6 +89,54 @@ Icon URL: https://<your-host>/public/icons/spotify-logo.png
 
 Restart the TV after installation if VIDAA does not show the tile immediately.
 
+## Scene image-sequence backend (optional, for TV co-play with Spotify)
+
+VIDAA pauses other media whenever a `<video>` decoder engages, so on the TV
+Spotify stops while a Scene clip plays. The workaround is an image-sequence
+"video": a Cloud Function pre-converts Pexels MP4s to JPG frames stored in
+Firebase Storage, the client cycles them with `<img>` updates, and no video
+decoder ever engages.
+
+### One-time setup
+
+1. Upgrade the Firebase project to the **Blaze plan** (required for any Cloud
+   Function deploys; free-tier quotas apply for actual usage).
+2. **Enable Storage** in the Firebase Console (Build → Storage → Get started).
+   The first bucket auto-provisions in `us-central1`.
+3. **Set the Pexels API key** as a Function secret:
+   ```sh
+   cd functions && npm install
+   firebase functions:secrets:set PEXELS_KEY
+   ```
+4. **Deploy** the rules, storage rules, and functions:
+   ```sh
+   firebase deploy --only firestore:rules,storage,functions
+   ```
+5. (Optional) Trigger the first library refresh by hitting `refreshSceneLibrary`
+   manually from the Cloud Console, or wait for the next Monday 03:00 UTC run.
+6. In the TV app, open **Settings → Scene playback → Image-sequence Scene
+   mode** and turn it **On**. Scene now uses the pre-converted JPG library.
+
+### What runs
+
+- `refreshSceneLibrary` (Pub/Sub schedule `0 3 * * 1`): once a week, fetches
+  ~6 nature + ~6 city Pexels clips, ffmpeg-extracts 10fps JPGs scaled to
+  1024w, uploads to Storage, writes `sceneClips/<id>` docs to Firestore, and
+  prunes the previous week's clips from both Storage and Firestore.
+- `listSceneClips` (HTTPS): returns the current library by category. Cached
+  with `Cache-Control: max-age=300`.
+- `convertSceneClip` (HTTPS): on-demand single-clip conversion for testing.
+
+### Free-tier sizing notes
+
+- Cloud Functions: ~125k invocations + ~40k GB-s/month free. One weekly refresh
+  uses a fraction of that.
+- Storage: 1 GiB free + 1 GiB/day egress. 12 clips at ~10 MB each ≈ 120 MiB.
+- Firestore: well under the 1 GiB / 50k reads / 20k writes/day free limits.
+
+If you change `TARGET_PER_CATEGORY` in `functions/index.js` upward, watch the
+Storage egress budget — frame JPGs are the bulk of the traffic.
+
 ## Interpreting Results
 
 - If remote keys are not logged, we need VIDAA-specific key code handling before building the real app.
