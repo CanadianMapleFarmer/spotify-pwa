@@ -39,9 +39,12 @@ const db = admin.firestore();
 const PEXELS_KEY = defineSecret("PEXELS_KEY");
 
 const FPS = 10;
-const WIDTH = 1024;
+const WIDTH = 1280; // render width; we pick a source >= this and downscale (never upscale)
 const JPEG_QUALITY = 6; // ffmpeg -q:v 2 (best) → 31 (worst); 6 is a good ambient sweet spot
-const STORAGE_PREFIX = "scene-frames";
+// Bumped to -v2 to force re-extraction at the new width/source-selection: the
+// per-clip cache check keys off this prefix, so old (blurry, upscaled-from-640p)
+// frames under "scene-frames" are ignored and clips re-render at full quality.
+const STORAGE_PREFIX = "scene-frames-v2";
 const COLLECTION = "sceneClips";
 
 // How many clips to keep per category. The Scene UI cycles through them randomly.
@@ -141,22 +144,25 @@ async function convertOneClip(sourceUrl, category, bucket) {
 }
 
 async function fetchPexelsClips(category, key, limit) {
-  // The Pexels Videos API returns ~portrait/landscape MP4s of varying sizes.
-  // We pick the lowest-resolution landscape file per video to keep the
-  // downstream transcode + storage small.
+  // The Pexels Videos API returns landscape MP4s at several resolutions per
+  // video. We want the *smallest source that is still at least WIDTH*, so the
+  // transcode downscales (sharp) rather than upscaling a tiny file (blurry — the
+  // old code picked the lowest-res file and scaled it up, which looked terrible
+  // fullscreen on the TV). If nothing reaches WIDTH we take the largest available.
   const url = new URL("https://api.pexels.com/videos/search");
   url.searchParams.set("query", CATEGORIES[category] || category);
   url.searchParams.set("per_page", String(Math.max(limit * 2, 10)));
   url.searchParams.set("orientation", "landscape");
-  url.searchParams.set("size", "medium");
+  url.searchParams.set("size", "medium"); // medium = at least Full HD source, so a >=WIDTH file exists
   const resp = await fetch(url.toString(), { headers: { Authorization: key } });
   if (!resp.ok) throw new Error(`Pexels API ${resp.status}`);
   const data = await resp.json();
   const picks = [];
   for (const video of data.videos || []) {
-    const file = (video.video_files || [])
-      .filter((f) => f.file_type === "video/mp4" && f.width && f.width <= 1280)
-      .sort((a, b) => a.width - b.width)[0];
+    const mp4s = (video.video_files || []).filter((f) => f.file_type === "video/mp4" && f.width);
+    if (!mp4s.length) continue;
+    const atOrAbove = mp4s.filter((f) => f.width >= WIDTH).sort((a, b) => a.width - b.width);
+    const file = atOrAbove[0] || mp4s.slice().sort((a, b) => b.width - a.width)[0];
     if (file && file.link) picks.push(file.link);
     if (picks.length >= limit) break;
   }
