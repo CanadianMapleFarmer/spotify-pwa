@@ -41,6 +41,10 @@ const PEXELS_KEY = defineSecret("PEXELS_KEY");
 const FPS = 10;
 const WIDTH = 1280; // render width; we pick a source >= this and downscale (never upscale)
 const JPEG_QUALITY = 6; // ffmpeg -q:v 2 (best) → 31 (worst); 6 is a good ambient sweet spot
+// Cap frames per clip. The client only animates the first ~120 frames (its own
+// SCENE_MAX_FRAMES), so extracting more just wastes storage and — at 1280 — risks
+// pushing the 540s-capped weekly job over its timeout. 12s @ 10fps is plenty.
+const MAX_FRAMES = 120;
 // Bumped to -v2 to force re-extraction at the new width/source-selection: the
 // per-clip cache check keys off this prefix, so old (blurry, upscaled-from-640p)
 // frames under "scene-frames" are ignored and clips re-render at full quality.
@@ -82,6 +86,7 @@ async function extractFrames(inputPath, outPattern) {
       .outputOptions([
         "-vf", `fps=${FPS},scale=${WIDTH}:-2`,
         "-q:v", String(JPEG_QUALITY),
+        "-frames:v", String(MAX_FRAMES),
       ])
       .output(outPattern)
       .on("end", resolve)
@@ -236,6 +241,30 @@ exports.convertSceneClip = onRequest(
   }
 );
 
+// Core refresh routine shared by the weekly schedule and the manual trigger:
+// fetch fresh Pexels sources per category, convert each to a JPG sequence, then
+// prune any clips no longer in the current set.
+async function runSceneRefresh(key) {
+  if (!key) throw new Error("PEXELS_KEY secret not configured");
+  const bucket = admin.storage().bucket();
+  const idsByCategory = {};
+  for (const category of Object.keys(CATEGORIES)) {
+    const sources = await fetchPexelsClips(category, key, TARGET_PER_CATEGORY);
+    idsByCategory[category] = [];
+    for (const sourceUrl of sources) {
+      try {
+        const { id } = await convertOneClip(sourceUrl, category, bucket);
+        idsByCategory[category].push(id);
+      } catch (err) {
+        console.warn(`Clip failed (${category}): ${sourceUrl}`, err.message);
+      }
+    }
+  }
+  await pruneObsolete(idsByCategory);
+  console.log("Scene library refreshed:", idsByCategory);
+  return idsByCategory;
+}
+
 // Scheduled (weekly): refresh the library. Runs ~Monday 03:00 UTC to keep
 // invocations off the live-traffic windows.
 exports.refreshSceneLibrary = onSchedule(
@@ -248,23 +277,6 @@ exports.refreshSceneLibrary = onSchedule(
     secrets: [PEXELS_KEY],
   },
   async () => {
-    const key = PEXELS_KEY.value();
-    if (!key) throw new Error("PEXELS_KEY secret not configured");
-    const bucket = admin.storage().bucket();
-    const idsByCategory = {};
-    for (const category of Object.keys(CATEGORIES)) {
-      const sources = await fetchPexelsClips(category, key, TARGET_PER_CATEGORY);
-      idsByCategory[category] = [];
-      for (const sourceUrl of sources) {
-        try {
-          const { id } = await convertOneClip(sourceUrl, category, bucket);
-          idsByCategory[category].push(id);
-        } catch (err) {
-          console.warn(`Clip failed (${category}): ${sourceUrl}`, err.message);
-        }
-      }
-    }
-    await pruneObsolete(idsByCategory);
-    console.log("Scene library refreshed:", idsByCategory);
+    await runSceneRefresh(PEXELS_KEY.value());
   }
 );
