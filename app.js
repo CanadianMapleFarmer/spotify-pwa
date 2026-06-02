@@ -145,6 +145,13 @@ const state = {
   sceneUseImageSequence: false, // backend-mode: cycle JPG frames via Cloud Function
   sceneImageTimer: 0, // setInterval handle for the image-sequence animator
   imgseqPreloaded: [], // decoded Image refs held so frames stay in cache (no re-fetch mid-loop)
+  // The Web Playback SDK only emits player_state_changed for the TV's own device.
+  // When playback is on the phone (or any other device) we'd never hear about
+  // track changes — so we poll /v1/me/player here as the truth source. Cadence
+  // adapts to the current view (fast on Now/Ambient where staleness is visible).
+  playbackPollTimer: 0,
+  playbackPollInFlight: false,
+  playbackPollBackoffUntil: 0,
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -370,6 +377,16 @@ function init() {
     renderSpotifyFacts();
   });
 
+  // Pause polling when the tab goes hidden (e.g. TV briefly drops focus) so we
+  // don't burn quota; resume snappily on return so the user sees fresh state.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopPlaybackPolling();
+    } else {
+      startPlaybackPolling("visibility");
+    }
+  });
+
   hydrateUiPreferences();
   runDeviceChecks();
   renderPairInfo();
@@ -411,6 +428,9 @@ async function bootstrapData(reason) {
       getCurrentPlayback().catch((error) => logError("Playback sync failed", error));
       state.dataLoaded = true;
       state.dataLoading = false;
+      // Now that we have a token, start the recurring poll so external playback
+      // (phone next-track, etc.) propagates here without waiting for a user action.
+      startPlaybackPolling("bootstrap");
       log(`Initial data loaded (${reason}).`, "success");
       return;
     } catch (error) {
@@ -1985,6 +2005,9 @@ function setView(viewOrEvent) {
   } else {
     stopVisualizer();
   }
+  // Adjust the playback-poll cadence to the new view (Now/Ambient → fast, others
+  // → slow) so the visible bubbles refresh quickly when the phone changes tracks.
+  restartPlaybackPolling("view change");
   syncAmbientVideo();
   // Land focus inside the new view so the remote starts somewhere sensible.
   // Skip Ambient (it owns its own mode-arrow handling) and skip if focus is already there.
@@ -2397,6 +2420,21 @@ async function createSpotifyPlayerInternal() {
       return;
     }
     const track = playerState.track_window?.current_track;
+    // When another device (e.g. the phone) takes over, this SDK fires one last
+    // `paused=true` event holding the LAST track the TV was playing. If our poll
+    // has already advanced state.nowPlaying to whatever the phone is on, that
+    // stale event would yank the UI backward to the old track + paused state.
+    // Skip it: paused=true + mismatched track-id = "I just gave up control".
+    const stalePauseFromTransfer =
+      playerState.paused
+      && track?.id
+      && state.nowPlaying?.id
+      && state.nowPlaying.id !== track.id;
+    if (stalePauseFromTransfer) {
+      log(`Spotify SDK paused-after-transfer for ${track.name} ignored; phone holds ${state.nowPlaying.title}.`);
+      renderSpotifyFacts();
+      return;
+    }
     updateNowPlayingFromSdk(playerState);
     log(
       `Spotify state: paused=${playerState.paused} position=${playerState.position} track=${track?.name || "unknown"}`
@@ -2501,12 +2539,83 @@ async function getCurrentPlayback() {
     log("Spotify current playback: no active playback.");
     return;
   }
+  if (response.status === 429) {
+    // Surface the Retry-After so the poller can back off rather than hammering.
+    const retryAfter = Number(response.headers.get("Retry-After") || 30);
+    const err = new Error(`Spotify getCurrentPlayback rate-limited (429); retry after ${retryAfter}s`);
+    err.status = 429;
+    err.retryAfter = retryAfter;
+    throw err;
+  }
   if (!response.ok) {
     throw new Error(`Spotify getCurrentPlayback failed (${response.status}): ${await readSpotifyError(response)}`);
   }
   const playback = await response.json();
   updateNowPlayingFromWebApi(playback);
   log(`Spotify current playback: device=${playback.device?.name || "unknown"} active=${playback.device?.is_active} playing=${playback.is_playing} item=${playback.item?.name || "unknown"}`);
+}
+
+// How often to re-fetch /v1/me/player. Fast cadence on the views where stale
+// "now playing" data is glaringly visible (the bubbles/pills the user is
+// staring at), slower elsewhere where it just feeds the corner pill.
+function getPlaybackPollInterval() {
+  if (state.currentView === "ambient" || state.currentView === "now") return 4000;
+  return 15000;
+}
+
+// Drive periodic playback refreshes so a track change on the phone (or any
+// external device) is picked up here within a few seconds. Polls are paused
+// when the tab is hidden, when signed out, and during a Retry-After backoff.
+function startPlaybackPolling(reason = "") {
+  stopPlaybackPolling();
+  if (typeof document !== "undefined" && document.hidden) return;
+  const signedIn = Boolean(getStoredAccessToken() || localStorage.getItem(storageKeys.refreshToken));
+  if (!signedIn) return;
+  const tick = () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    if (state.playbackPollInFlight) return;
+    if (Date.now() < state.playbackPollBackoffUntil) return;
+    state.playbackPollInFlight = true;
+    getCurrentPlayback()
+      .catch((err) => {
+        if (err && err.status === 429) {
+          const ms = Math.max(5000, Number(err.retryAfter || 30) * 1000);
+          state.playbackPollBackoffUntil = Date.now() + ms;
+          log(`Spotify playback poll rate-limited; backing off ${Math.round(ms / 1000)}s.`, "warn");
+          return;
+        }
+        // Transient failures (network blips, 5xx) just skip a beat — the next
+        // tick will try again. Log so we can see them in Diagnostics.
+        logError("Playback poll failed", err);
+      })
+      .finally(() => {
+        state.playbackPollInFlight = false;
+      });
+  };
+  state.playbackPollTimer = window.setInterval(tick, getPlaybackPollInterval());
+  // Fire one immediately so view changes get fresh state without waiting a full
+  // interval. Guarded by the in-flight + backoff checks inside tick.
+  tick();
+  if (reason) log(`Playback polling started (${reason}, ${getPlaybackPollInterval()}ms).`);
+}
+
+function stopPlaybackPolling() {
+  if (state.playbackPollTimer) {
+    window.clearInterval(state.playbackPollTimer);
+    state.playbackPollTimer = 0;
+  }
+}
+
+// Used when something that affects the cadence changes (view switch, tab
+// visibility flip). No-op if polling wasn't running.
+function restartPlaybackPolling(reason = "") {
+  if (!state.playbackPollTimer && !(typeof document !== "undefined" && document.hidden)) {
+    // Not currently running and we're visible — try to start (signed-in check
+    // is inside startPlaybackPolling).
+    startPlaybackPolling(reason);
+    return;
+  }
+  if (state.playbackPollTimer) startPlaybackPolling(reason);
 }
 
 function volumeDown() {
@@ -2532,6 +2641,7 @@ function resetSpotify() {
   state.spotifyPlayer = null;
   state.spotifyPlayerPromise = null;
   state.spotifyDeviceId = "";
+  stopPlaybackPolling();
   localStorage.removeItem(storageKeys.accessToken);
   localStorage.removeItem(storageKeys.refreshToken);
   localStorage.removeItem(storageKeys.expiresAt);
