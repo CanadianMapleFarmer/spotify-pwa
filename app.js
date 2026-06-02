@@ -104,6 +104,10 @@ const AMBIENT_VIDEOS = [
 // only for the current session — nothing is written to localStorage/disk.
 const SCENE_CATEGORIES = ["nature", "skyline"];
 const SCENE_CATEGORY_LABELS = { nature: "Nature", skyline: "City" };
+// Cap how many frames we fully preload+animate per clip. At ~10fps this is a
+// ~12s loop; the cap bounds memory (held Image refs) and the up-front buffer so
+// the TV doesn't stall fetching a huge sequence before the first frame shows.
+const SCENE_MAX_FRAMES = 120;
 // A few queries per category; we pick one at random each fetch so repeat visits
 // don't always surface the same page of results.
 const SCENE_QUERIES = {
@@ -140,6 +144,7 @@ const state = {
   sceneStripBlobs: [], // Object URLs to revoke when leaving Scene
   sceneUseImageSequence: false, // backend-mode: cycle JPG frames via Cloud Function
   sceneImageTimer: 0, // setInterval handle for the image-sequence animator
+  imgseqPreloaded: [], // decoded Image refs held so frames stay in cache (no re-fetch mid-loop)
   progressTimer: 0,
   remoteEvents: [],
   debugVisible: false,
@@ -2894,10 +2899,11 @@ function toggleSceneStripAudio() {
   } catch {}
   applySceneStripState();
   log(`Scene audio strip ${state.sceneStripAudio ? "enabled" : "disabled"}.`);
-  // If Scene is currently running, restart so the change takes effect on the
-  // next clip rather than only after the user toggles modes.
+  // Audio-strip only affects the <video> path. If we're running the image
+  // sequence, restarting via the video path would engage the firmware decoder
+  // and pause Spotify — so route through restartScene, which respects the mode.
   if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
-    startScenePlayback();
+    restartScene();
   }
 }
 
@@ -3177,6 +3183,9 @@ function stopImageSequence() {
     window.clearInterval(state.sceneImageTimer);
     state.sceneImageTimer = 0;
   }
+  // Drop the decoded-frame references so they can be GC'd; the next clip rebuilds
+  // its own buffer. Without this the held Images accumulate across clip swaps.
+  state.imgseqPreloaded = [];
 }
 
 // Diagnostics for the image-sequence path. Surfaced in the Debug overlay so we
@@ -3209,53 +3218,79 @@ async function playImageSequence(clip, token) {
   const img = elements.ambientImgSeq;
   if (!img || !clip || !clip.frames?.length) throw new Error("No frames");
 
+  const fps = clip.fps || 10;
+  // Cap the loop length: bounds the up-front buffer and held memory, and lets the
+  // first frame show promptly even for very long clips.
+  const wanted = clip.frames.slice(0, SCENE_MAX_FRAMES);
+
   setImgseqDiag({
     clipId: clip.id,
-    frameCount: clip.frames.length,
-    fps: clip.fps || 10,
+    frameCount: wanted.length,
+    fps,
     frameIndex: -1,
-    sourceUrl: clip.frames[0],
-    lastFrameStatus: "preloading…",
+    sourceUrl: wanted[0],
+    lastFrameStatus: `buffering 0/${wanted.length}…`,
     lastError: "",
     startedAt: Date.now(),
   });
+  setSceneStripStatus("strip", `buffering 0/${wanted.length}`);
 
-  // Preload the first few frames so the cycle doesn't blink on startup. Track
-  // how many preloads succeed vs fail so the debug panel surfaces network
-  // issues (e.g. blocked GCS hostname, expired ACL).
-  const preloadCount = Math.min(6, clip.frames.length);
-  const preloadResults = await Promise.all(clip.frames.slice(0, preloadCount).map((url) => new Promise((resolve) => {
+  // Fully preload the (capped) clip BEFORE animating, and hold every decoded
+  // Image for the clip's lifetime. This keeps the frames in the memory cache so
+  // swapping the visible <img>.src hits cache instead of the network — which is
+  // what was stuttering/stalling when we preloaded only a handful and fetched the
+  // rest live at 10fps. We animate over just the frames that actually loaded, so
+  // a few unreachable frames shorten the loop instead of blinking to broken ones.
+  const loaded = [];
+  let done = 0;
+  await Promise.all(wanted.map((url) => new Promise((resolve) => {
     const probe = new Image();
-    probe.onload = () => resolve(true);
-    probe.onerror = () => resolve(false);
+    const finish = (ok) => {
+      done += 1;
+      if (ok) loaded.push({ url, img: probe });
+      if (done % 8 === 0 || done === wanted.length) {
+        setImgseqDiag({ lastFrameStatus: `buffering ${done}/${wanted.length}…` });
+        setSceneStripStatus("strip", `buffering ${done}/${wanted.length}`);
+      }
+      resolve();
+    };
+    probe.onload = () => finish(true);
+    probe.onerror = () => finish(false);
     probe.src = url;
   })));
   if (state.sceneToken !== token) return;
-  const okPreloads = preloadResults.filter(Boolean).length;
-  if (okPreloads === 0) {
-    setImgseqDiag({ lastError: `0/${preloadCount} preloads OK (frames unreachable)` });
-    throw new Error(`Frames unreachable (0/${preloadCount} preloads succeeded)`);
+
+  if (!loaded.length) {
+    setImgseqDiag({ lastError: `0/${wanted.length} frames loaded (unreachable)` });
+    throw new Error(`Frames unreachable (0/${wanted.length} loaded)`);
   }
+
+  // Promise.all resolves in completion order, not source order — restore the
+  // original frame ordering so the loop plays forward.
+  const order = new Map(wanted.map((url, idx) => [url, idx]));
+  loaded.sort((p, q) => order.get(p.url) - order.get(q.url));
+  const frames = loaded.map((p) => p.url);
+  state.imgseqPreloaded = loaded.map((p) => p.img);
 
   // Mark the screensaver as imgseq-mode so CSS hides the <video> elements and
   // shows the <img>. setSceneStripStatus advertises which path is live.
   if (elements.ambientScreensaver) elements.ambientScreensaver.dataset.video = "imgseq";
-  setSceneStripStatus("strip", `imgseq ${clip.frames.length}f@${clip.fps}fps`);
-  setImgseqDiag({ lastFrameStatus: `preloaded ${okPreloads}/${preloadCount}` });
+  setSceneStripStatus("strip", `imgseq ${frames.length}f@${fps}fps`);
+  setImgseqDiag({ frameCount: frames.length, lastFrameStatus: `ready ${frames.length}/${wanted.length}` });
 
   // Surface frame load issues to the diag panel; one failed swap shouldn't kill
   // the cycle, but a sustained failure run is the kind of thing we want visible.
   img.onload = () => setImgseqDiag({ lastFrameStatus: "ok" });
   img.onerror = () => setImgseqDiag({ lastFrameStatus: "frame error", lastError: `frame load failed: ${img.src}` });
 
-  const interval = Math.max(60, Math.round(1000 / (clip.fps || 10)));
+  const interval = Math.max(60, Math.round(1000 / fps));
   let i = 0;
-  img.src = clip.frames[0];
+  img.src = frames[0];
   setImgseqDiag({ frameIndex: 0 });
   state.sceneImageTimer = window.setInterval(() => {
     if (state.sceneToken !== token) { stopImageSequence(); return; }
-    i = (i + 1) % clip.frames.length;
-    img.src = clip.frames[i];
+    i = (i + 1) % frames.length;
+    img.src = frames[i];
     state.imgseqDiag.frameIndex = i;
     // Throttle the DOM update — touching innerHTML at 10fps is fine but pointless.
     if (i % 10 === 0) updateImgseqDiag();
@@ -3544,12 +3579,31 @@ function crossfadeToInactive(token) {
 // to end). Reuses advanceSceneClip against the existing in-memory playlist.
 function skipSceneClip() {
   if (state.ambientMode !== "screensaver") return;
+  if (state.sceneUseImageSequence) {
+    // Image-sequence mode: jump straight to another random clip. Never fall into
+    // the <video> path here — it engages the firmware decoder and pauses Spotify.
+    log("Scene: skip to next image-sequence clip.");
+    startImageSequencePlayback();
+    return;
+  }
   if (!state.scenePlaylist.length) {
     syncAmbientVideo();
     return;
   }
   log("Scene: skip to next clip.");
   advanceSceneClip(state.sceneToken);
+}
+
+// Start Scene fresh on the path the user has selected. Critical: in image-sequence
+// mode we must NOT touch the <video> path — engaging the firmware decoder pauses
+// Spotify on this TV. Both start fns bump sceneToken, which cancels any in-flight
+// load/loop for the previous category.
+function restartScene() {
+  if (state.sceneUseImageSequence) {
+    startImageSequencePlayback();
+  } else {
+    startScenePlayback();
+  }
 }
 
 // Segmented control: pick a category directly. No-op if already active, otherwise
@@ -3566,7 +3620,7 @@ function selectSceneCategory(event) {
   log(`Scene category set to ${SCENE_CATEGORY_LABELS[state.sceneCategory]}.`);
   if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
     // Cancel any in-flight load and start fresh for the new category.
-    startScenePlayback();
+    restartScene();
   }
 }
 
