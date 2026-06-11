@@ -397,6 +397,16 @@
         </div>
 
         <div class="settings-section">
+          <p class="eyebrow">Listening</p>
+          <h3 class="settings-section__title">Continuation</h3>
+          <button class="focusable settings-toggle" id="toggleAutoplay" data-action="toggleAutoplaySimilar" role="switch" aria-checked="true">
+            <span class="settings-toggle__label">Autoplay similar music</span>
+            <span class="settings-toggle__hint">When the queue runs out and repeat is off, keep the music going by queueing a few tracks similar to what's playing (seeded from the current artists).</span>
+            <span class="settings-toggle__state" id="toggleAutoplayState">On</span>
+          </button>
+        </div>
+
+        <div class="settings-section">
           <p class="eyebrow">Ambient</p>
           <h3 class="settings-section__title">Scene playback</h3>
           <button class="focusable settings-toggle" id="toggleSceneImgSeq" data-action="toggleSceneImageSequence" role="switch" aria-checked="false">
@@ -501,9 +511,11 @@
       </div>
     </div>
 
-    <!-- Now Playing queue drawer: slides in from the right, focus-trapped while
-         open (Up/Down moves through rows, Back closes). Read-only list — the
-         Spotify Web API has no "jump to queue position N", so rows don't act. -->
+    <!-- Now Playing "Up Next" drawer: slides in from the right, focus-trapped
+         while open (Up/Down moves through rows, Back closes). Sections: Now
+         playing / In queue / Continuing from <context> / Radio. The Web API has
+         no "jump to queue position N", so a row plays its track in album
+         context instead. Queue is append-only — no remove/reorder. -->
     <aside class="queue-drawer" id="queueDrawer" role="dialog" aria-modal="true" aria-label="Play queue" hidden>
       <div class="queue-drawer__backdrop" data-action="closeQueueDrawer" aria-hidden="true"></div>
       <div class="queue-drawer__panel" role="document">

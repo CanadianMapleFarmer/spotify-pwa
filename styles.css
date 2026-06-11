@@ -593,6 +593,7 @@ body.debug-on .status-strip {
 }
 
 .card {
+  position: relative;
   min-height: 320px;
   padding: 8px;
   border: 0;
@@ -602,6 +603,28 @@ body.debug-on .status-strip {
   text-align: left;
   /* TV-safe: animate only transform/opacity. */
   transition: transform 200ms ease;
+}
+
+/* Track tiles only: "⋯" badge over the artwork on focus hinting the Right-arrow
+   context menu. Absolute + opacity-only — no layout shift, not focusable. */
+.card[data-track-uri]::after {
+  content: "⋯";
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  color: #e8ecf1;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  text-shadow: 0 1px 6px rgba(4, 6, 10, 0.9);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+
+.card[data-track-uri]:focus::after {
+  opacity: 1;
 }
 
 .card:focus,
@@ -2610,6 +2633,7 @@ body.is-phone-pair {
 }
 
 .collection-track {
+  position: relative;
   display: grid;
   grid-template-columns: 48px 1fr auto;
   align-items: center;
@@ -2622,6 +2646,27 @@ body.is-phone-pair {
   background: rgba(255, 255, 255, 0.03);
   color: #e8ecf1;
   text-align: left;
+}
+
+/* "⋯" hint that the Right arrow opens the track context menu. Absolutely
+   positioned + opacity-only fade: no layout shift, no new focusable. */
+.collection-track::after {
+  content: "⋯";
+  position: absolute;
+  top: 0;
+  right: 16px;
+  color: var(--text-muted);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1.4;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+
+.collection-track:focus::after {
+  opacity: 1;
 }
 
 .collection-track:hover {
@@ -2993,6 +3038,21 @@ body.is-phone-pair {
   color: var(--warn);
 }
 
+/* Section eyebrows inside the Up Next panel (Now playing / In queue /
+   Continuing from / Radio). Presentation only — never focusable. */
+.queue-section-head {
+  margin: 18px 0 4px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.queue-section-head:first-child {
+  margin-top: 0;
+}
+
 .queue-row {
   display: grid;
   grid-template-columns: 52px 1fr auto;
@@ -3008,6 +3068,23 @@ body.is-phone-pair {
   font: inherit;
   font-weight: 500;
   text-align: left;
+}
+
+/* Current track header row: non-interactive (a div, not a button) so it can't
+   join the focus pool — it just anchors the list. */
+.queue-row--now {
+  border-color: rgba(30, 215, 96, 0.4);
+  background: rgba(30, 215, 96, 0.08);
+}
+
+.queue-row--now .queue-row__title {
+  color: var(--green);
+}
+
+.queue-row--now .queue-row__pos {
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .queue-row:hover {
