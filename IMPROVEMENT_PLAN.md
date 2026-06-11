@@ -4,7 +4,7 @@ Derived from the June 2026 full audit (architecture/UX, ambient pipeline, queue/
 
 ## Hard constraints (all workstreams)
 
-- Vanilla JS / CSS only — no frameworks, no build step. Match existing code style in `app.js` / `styles.css`.
+- Vanilla JS / CSS only — no frameworks, no build step. Match existing code style in the `js/` modules / `styles.css`. (Historical: at the time of this audit the app was a single `app.js`; line references below point into that monolith.)
 - Preserve: TV remote diagnostics, spatial focus behavior, toast error reporting, hardcoded client ID, Settings-based pairing/auth, resilient/idempotent Web Playback player creation.
 - Animations: `transform` + `opacity` only. No new `backdrop-filter` / large `filter: blur()` — the VIDAA GPU cannot handle them.
 - Do NOT bump `service-worker.js` CACHE_NAME in workstream branches (done once at integration to avoid conflicts).

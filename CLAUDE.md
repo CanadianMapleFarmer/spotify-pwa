@@ -3,7 +3,7 @@
 This repo is currently a VIDAA OS Spotify TV PWA.
 
 - Start with `README.md` for local run and TV install instructions.
-- The app is dependency-free static web code under the repository root and `public/`.
+- The app is dependency-free static web code: native ES modules under `js/` (entry `js/main.js`, no build step/bundler/import maps) plus `index.html`, `styles.css`, and assets under `public/`. See the Code Layout section in `README.md`.
 - Spotify Web Playback SDK viability has been confirmed on the target TV through a Cloudflare Tunnel and VIDAA app tile.
 - Preserve TV remote diagnostics, spatial focus behavior, and toast error reporting when extending the app.
 - The Spotify client ID is intentionally hardcoded for this personal TV app; do not reintroduce a visible client ID input.

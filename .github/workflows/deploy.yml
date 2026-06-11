@@ -33,17 +33,20 @@ jobs:
         run: |
           set -euo pipefail
           test -f index.html
-          test -f app.js
+          test -f js/main.js
           test -f styles.css
           test -f service-worker.js
           test -f manifest.webmanifest
           test -f firebase.json
           test -f .firebaserc
           test -f firestore.rules
-          # app.js ships as <script type="module">; check it in module mode so
-          # module-only errors (e.g. duplicate top-level lexical declarations) are
-          # caught here instead of silently shipping a non-executing bundle.
-          node --check --input-type=module < app.js
+          # The app ships as native ES modules under /js (entry: js/main.js);
+          # check every module in module mode so module-only errors (duplicate
+          # top-level lexical declarations, bad import/export syntax) are caught
+          # here instead of silently shipping a non-executing module graph.
+          for f in js/*.js js/*/*.js; do
+            node --check --input-type=module < "$f"
+          done
           echo "Payload OK"
 
       - name: Setup Node

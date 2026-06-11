@@ -17,6 +17,43 @@ Static Spotify TV PWA for VIDAA OS browser tiles installed with [`weinzii/vidaa-
 - VIDAA remote support for arrows, Enter, Back, channel up/down page scrolling, volume, and common media keys.
 - Toast messages for success/error feedback on the TV.
 
+## Code Layout
+
+The app is dependency-free static web code shipped as native ES modules — no
+build step, no bundler, no import maps (the VIDAA Chromium build predates
+them), only relative static imports. `index.html` loads `/js/main.js` as
+`<script type="module">` and the browser resolves the rest of the graph:
+
+```text
+js/
+  main.js            entry: data-action registry, boot wiring, init()
+  config.js          constants: client id/scopes, storage keys, mode tables
+  state.js           the single shared mutable state object
+  dom.js             the elements registry + tiny DOM render helpers
+  utils.js           formatters, image pickers, escaping, PRNG
+  diagnostics.js     log/logError, toasts, debug panel, device checks
+  auth.js            PKCE OAuth, token refresh, pair-login, sign out
+  api.js             Spotify API fetch helpers + error humanizer
+  player.js          Web Playback SDK device, transport, polling, NP sync
+  focus.js           spatial-focus engine, remote keys, Back/exit dialog
+  shell.js           setView router + shell status chrome
+  cards.js           shared shelf/card renderers
+  queue.js           queue drawer, up-next card, radio auto-fill
+  track-menu.js      track context menu + playlist picker
+  views/             home, search, library, collection, artist, now, settings
+  ambient/           index (modes), room, palette, scene (procedural), visualizer
+```
+
+The shared mutable `state` (from `state.js`) and `elements` (from `dom.js`)
+objects are imported and mutated directly by every module, exactly like the
+old single-file app did. Feature modules form a few static import cycles
+(e.g. `focus.js` dispatches Back into views that import focus helpers); this
+is safe because the cyclic references are all hoisted function declarations
+resolved at call time — see the note at the top of `js/focus.js`.
+
+When changing any `js/` file, bump the `?v=` query on `/js/main.js` in
+`index.html` and the `CACHE_NAME`/precache list in `service-worker.js`.
+
 ## Local Run
 
 ```sh

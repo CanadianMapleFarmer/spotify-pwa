@@ -1,9 +1,39 @@
-const CACHE_NAME = "spotify-tv-v44";
+const CACHE_NAME = "spotify-tv-v45";
 const ASSETS = [
   "/",
   "/index.html",
   "/styles.css?v=45",
-  "/app.js?v=49",
+  // The entry module is referenced from index.html with a cache-busting query,
+  // so precache it under that exact URL. Its sub-module imports are plain
+  // unversioned paths (import statements carry no query string), so they are
+  // precached without one — the network-first shell strategy below keeps them
+  // fresh while online and these entries serve as the offline fallback.
+  "/js/main.js?v=50",
+  "/js/api.js",
+  "/js/auth.js",
+  "/js/cards.js",
+  "/js/config.js",
+  "/js/diagnostics.js",
+  "/js/dom.js",
+  "/js/focus.js",
+  "/js/player.js",
+  "/js/queue.js",
+  "/js/shell.js",
+  "/js/state.js",
+  "/js/track-menu.js",
+  "/js/utils.js",
+  "/js/ambient/index.js",
+  "/js/ambient/palette.js",
+  "/js/ambient/room.js",
+  "/js/ambient/scene.js",
+  "/js/ambient/visualizer.js",
+  "/js/views/artist.js",
+  "/js/views/collection.js",
+  "/js/views/home.js",
+  "/js/views/library.js",
+  "/js/views/now.js",
+  "/js/views/search.js",
+  "/js/views/settings.js",
   "/manifest.webmanifest",
   "/public/icons/spotify-logo.png",
   "/public/icons/icon-192.png",
