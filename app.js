@@ -27,64 +27,8 @@ const storageKeys = {
   debugVisible: "spotify-pwa.debug-visible",
   ambientMode: "spotify-pwa.ambient-mode",
   sceneCategory: "spotify-pwa.scene-category",
-  sceneStripAudio: "spotify-pwa.scene-strip-audio",
-  // -v2: silent MP4 clips are now the primary Scene path, so devices that had
-  // image-sequence forced on (the old workaround) reset to the new default (off).
-  sceneImageSequence: "spotify-pwa.scene-image-sequence-v2",
   autoplaySimilar: "spotify-pwa.autoplay-similar",
 };
-
-// Image-sequence Scene library: read directly from Firestore (the scheduled
-// Cloud Function populates sceneClips collection weekly). The Firebase compat
-// SDK is loaded in index.html; we lazily grab the client when needed.
-function getFirestoreClient() {
-  try {
-    if (typeof window === "undefined") return null;
-    if (window.firebase?.firestore) return window.firebase.firestore();
-  } catch {}
-  return null;
-}
-
-// In-memory cache of the latest library list. Refreshed on Scene entry.
-let _sceneLibraryCache = null;
-// The Firebase compat scripts load with `defer`; if the user enters Scene mode
-// quickly after boot, getFirestoreClient() may return null on first try. Poll
-// for a short window before giving up so we don't surface a spurious error.
-async function waitForFirestore(timeoutMs = 4000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const fs = getFirestoreClient();
-    if (fs) return fs;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return null;
-}
-async function loadSceneLibrary() {
-  if (_sceneLibraryCache) return _sceneLibraryCache;
-  const fs = await waitForFirestore();
-  if (!fs) throw new Error("Firestore SDK did not load (network blocked?)");
-  const snap = await fs.collection("sceneClips").get();
-  const byCategory = { nature: [], skyline: [] };
-  snap.forEach((doc) => {
-    const d = doc.data();
-    if (!byCategory[d.category]) return;
-    // Two doc shapes coexist: new silent-MP4 clips ({ kind: "video", videoUrl })
-    // and legacy image-sequence clips ({ frames: [...], fps }). Silent clips are
-    // preferred at playback time; frames are kept as fallback + debug path.
-    const hasVideo = d.kind === "video" && typeof d.videoUrl === "string" && d.videoUrl;
-    const hasFrames = Array.isArray(d.frames) && d.frames.length;
-    if (!hasVideo && !hasFrames) return;
-    byCategory[d.category].push({
-      id: d.id,
-      kind: hasVideo ? "video" : "frames",
-      videoUrl: hasVideo ? d.videoUrl : "",
-      frames: hasFrames ? d.frames : [],
-      fps: d.fps || 10,
-    });
-  });
-  _sceneLibraryCache = byCategory;
-  return byCategory;
-}
 
 const PHONE_MODE_SESSION_KEY = "spotify-pwa.phone-mode";
 const PAIR_SESSION_COLLECTION = "pairSessions";
@@ -96,43 +40,17 @@ const AMBIENT_MODE_LABELS = {
   screensaver: "Scene",
   visualizer: "Visualizer",
 };
-// Scene metadata bubble drifts only between the top corners so it never collides
-// with the control cluster anchored bottom-left.
-
-// Screensaver scenery, tried in order. Local files (drop your own loops into
-// public/ambient/) win first; the hotlinked city loops are a best-effort
-// fallback. If every source fails, the generative drift scene takes over.
-const AMBIENT_VIDEOS = [
-  "/public/ambient/loop-1.mp4",
-  "/public/ambient/loop-2.mp4",
-  "/public/ambient/loop-3.mp4",
-  "https://assets.mixkit.co/videos/preview/mixkit-aerial-shot-of-a-city-at-night-time-4063-large.mp4",
-  "https://assets.mixkit.co/videos/preview/mixkit-night-traffic-in-the-city-4053-large.mp4",
-  "https://assets.mixkit.co/videos/preview/mixkit-traffic-in-the-city-during-the-night-4055-large.mp4",
-];
-
-// === Pexels long-form Scene scenery ===========================================
-// Scene mode prefers fresh, full-length clips from the Pexels video API. The key
-// is injected at deploy time into window.__PEXELS_KEY__ (see pexels-config.js);
-// it is empty locally and on PR previews, so Scene transparently falls back to
-// the bundled AMBIENT_VIDEOS loops. Per Pexels terms we keep clips in memory
-// only for the current session — nothing is written to localStorage/disk.
+// === Procedural Scene =========================================================
+// Scene is rendered entirely client-side: layered silhouette SVGs with very slow
+// CSS parallax drift + one 30fps-capped canvas for particles (stars, clouds, car
+// streaks). No <video> ever plays — the TV firmware pauses Spotify whenever a
+// video with an audio track engages the decoder, and even silent clips proved
+// unreliable, so the whole video/Pexels/Firestore clip pipeline was removed.
 const SCENE_CATEGORIES = ["nature", "skyline"];
 const SCENE_CATEGORY_LABELS = { nature: "Nature", skyline: "City" };
-// Cap how many frames we fully preload+animate per clip. At ~10fps this is a
-// ~12s loop; the cap bounds memory (held Image refs) and the up-front buffer so
-// the TV doesn't stall fetching a huge sequence before the first frame shows.
-const SCENE_MAX_FRAMES = 120;
-// A few queries per category; we pick one at random each fetch so repeat visits
-// don't always surface the same page of results.
-const SCENE_QUERIES = {
-  nature: ["nature landscape", "mountains", "forest", "ocean waves"],
-  skyline: ["city skyline night", "city aerial", "cityscape timelapse"],
-};
-const PEXELS_VIDEO_SEARCH = "https://api.pexels.com/videos/search";
-const PEXELS_PER_PAGE = 20;
-const PEXELS_MAX_PAGE = 5; // keep paging shallow so results stay relevant
-const PEXELS_MAX_RETRIES = 3; // for 429 backoff
+// Time-of-day flavors tint the sky/glow. Entry picks by the local clock; Skip
+// re-rolls everything (seed, flavor, palette mix) for a fresh variation.
+const SCENE_FLAVORS = ["dawn", "evening", "night"];
 
 const state = {
   focusIndex: 0,
@@ -149,17 +67,14 @@ const state = {
   shuffle: false,
   repeat: "off",
   sceneCategory: "nature",
-  scenePlaylist: [], // in-memory list of mp4 URLs (shuffled)
-  scenePlaylistIndex: -1,
-  sceneSource: "local", // "silent" | "pexels" | "local" — which scenery is currently feeding
-  sceneActiveVideo: "a", // which A/B element is currently visible
-  sceneToken: 0, // bumped on category change / mode exit to cancel stale async work
-  sceneFetchInFlight: false,
-  sceneStripAudio: true, // experimental: strip audio from Pexels MP4s via mp4box
-  sceneStripBlobs: [], // Object URLs to revoke when leaving Scene
-  sceneUseImageSequence: false, // backend-mode: cycle JPG frames via Cloud Function
-  sceneImageTimer: 0, // setInterval handle for the image-sequence animator
-  imgseqPreloaded: [], // decoded Image refs held so frames stay in cache (no re-fetch mid-loop)
+  sceneSeed: 0, // PRNG seed for the procedural scene; Skip re-rolls it
+  sceneFlavor: "", // "dawn" | "evening" | "night" — clock-picked on entry, re-rolled on Skip
+  sceneBuiltKey: "", // `${category}:${seed}` of the scene currently in the DOM
+  sceneRaf: 0, // rAF handle for the scene particle canvas (30fps capped)
+  sceneRect: null, // cached canvas CSS-pixel size — measured outside the draw loop
+  sceneResizeHandler: null,
+  sceneParticles: null, // seeded stars/clouds/car streaks consumed by the draw loop
+  sceneTintables: null, // node refs the palette re-tint touches without rebuilding geometry
   // The Web Playback SDK only emits player_state_changed for the TV's own device.
   // When playback is on the phone (or any other device) we'd never hear about
   // track changes — so we poll /v1/me/player here as the truth source. Cadence
@@ -200,17 +115,6 @@ const state = {
   trackMenuReturnFocus: null,
   userPlaylists: null, // cached editable playlists for the add-to-playlist picker
   upNextTrackId: "", // nowPlaying id the up-next card was last shown for (once per song)
-  imgseqDiag: {
-    library: "",
-    clipId: "",
-    sourceUrl: "",
-    frameIndex: -1,
-    frameCount: 0,
-    fps: 0,
-    lastFrameStatus: "",
-    lastError: "",
-    startedAt: 0,
-  },
 };
 
 const elements = {
@@ -262,15 +166,16 @@ const elements = {
   sceneNpProgressFill: document.querySelector("#sceneNpProgressFill"),
   sceneNpTime: document.querySelector("#sceneNpTime"),
   sceneNpStatus: document.querySelector("#sceneNpStatus"),
-  ambientDriftA: document.querySelector("#ambientDriftA"),
-  ambientDriftB: document.querySelector("#ambientDriftB"),
   ambientVisualizerCanvas: document.querySelector("#ambientVisualizerCanvas"),
   ambientVisualizerArt: document.querySelector("#ambientVisualizerArt"),
   ambientScreensaver: document.querySelector("#ambientScreensaver"),
-  ambientVideo: document.querySelector("#ambientVideo"),
-  ambientVideoB: document.querySelector("#ambientVideoB"),
-  ambientImgSeq: document.querySelector("#ambientImgSeq"),
-  imgseqFacts: document.querySelector("#imgseqFacts"),
+  sceneSky: document.querySelector("#sceneSky"),
+  sceneCanvas: document.querySelector("#sceneCanvas"),
+  sceneFgCanvas: document.querySelector("#sceneFgCanvas"),
+  sceneLayerFar: document.querySelector("#sceneLayerFar"),
+  sceneLayerMid: document.querySelector("#sceneLayerMid"),
+  sceneLayerNear: document.querySelector("#sceneLayerNear"),
+  sceneMist: document.querySelector("#sceneMist"),
   ambientSceneControls: document.querySelector("#ambientSceneControls"),
   sceneNatureBtn: document.querySelector("#sceneNatureBtn"),
   sceneSkylineBtn: document.querySelector("#sceneSkylineBtn"),
@@ -371,8 +276,6 @@ const actions = {
   resetSpotify,
   clearLog,
   toggleDebugView,
-  toggleSceneStripAudio,
-  toggleSceneImageSequence,
   toggleAutoplaySimilar,
   cancelExit,
   confirmExit,
@@ -566,11 +469,6 @@ function hydrateUiPreferences() {
     }
     const savedDebug = localStorage.getItem(storageKeys.debugVisible);
     state.debugVisible = savedDebug === "1";
-    const savedStrip = localStorage.getItem(storageKeys.sceneStripAudio);
-    // Default ON (experimental) so the user can flip it off if it misbehaves.
-    state.sceneStripAudio = savedStrip === null ? true : savedStrip === "1";
-    const savedImgSeq = localStorage.getItem(storageKeys.sceneImageSequence);
-    state.sceneUseImageSequence = savedImgSeq === "1";
     // Default ON: keep the music going when the queue runs out.
     const savedAutoplay = localStorage.getItem(storageKeys.autoplaySimilar);
     state.autoplaySimilar = savedAutoplay === null ? true : savedAutoplay === "1";
@@ -578,8 +476,6 @@ function hydrateUiPreferences() {
     // localStorage unavailable; defaults already set
   }
   applyDebugVisibility();
-  applySceneStripState();
-  applySceneImageSequenceState();
   applyAutoplaySimilarState();
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
@@ -3242,7 +3138,7 @@ function setView(viewOrEvent) {
   // Adjust the playback-poll cadence to the new view (Now/Ambient → fast, others
   // → slow) so the visible bubbles refresh quickly when the phone changes tracks.
   restartPlaybackPolling("view change");
-  syncAmbientVideo();
+  syncAmbientScene();
   // Land focus inside the new view so the remote starts somewhere sensible.
   // Skip Ambient (it owns its own mode-arrow handling) and skip if focus is already there.
   if (nextView !== "ambient") {
@@ -3276,7 +3172,7 @@ function setAmbientMode(eventOrMode) {
   if (state.currentView === "ambient") {
     startVisualizerIfNeeded();
   }
-  syncAmbientVideo();
+  syncAmbientScene();
   log(`Ambient mode set to ${state.ambientMode}.`);
 }
 
@@ -4119,7 +4015,7 @@ function renderAmbient() {
     }
   }
 
-  // Drift layers for screensaver pull from the same background-image custom property.
+  // Room mode's backdrop pulls the artwork from this custom property.
   const artUrl = image ? `url("${image}")` : "none";
   stage.style.setProperty("--ambient-art-url", artUrl);
 
@@ -4195,6 +4091,11 @@ function applyAmbientPalette(palette) {
   }
   // Now Playing shares the track palette: a subtle tint instead of flat black.
   applyPaletteChannels(elements.viewNow, "--np-rgb", palette);
+  // Visualizer background wash picks up the palette via CSS rgba(var(--viz-rgb)).
+  applyPaletteChannels(elements.viewAmbient, "--viz-rgb", palette);
+  // The procedural Scene harmonizes with the playing album: re-tint sky/layers
+  // in place (no geometry rebuild, so the slow parallax never jumps).
+  applySceneTint();
 }
 
 // Writes a palette entry as bare "r, g, b" channels so CSS can compose its own
@@ -4302,47 +4203,6 @@ function toggleDebugView() {
   log(`Debug view ${state.debugVisible ? "enabled" : "disabled"}.`);
 }
 
-function toggleSceneImageSequence() {
-  state.sceneUseImageSequence = !state.sceneUseImageSequence;
-  try {
-    localStorage.setItem(storageKeys.sceneImageSequence, state.sceneUseImageSequence ? "1" : "0");
-  } catch {}
-  applySceneImageSequenceState();
-  log(`Scene image-sequence mode ${state.sceneUseImageSequence ? "enabled" : "disabled"}.`);
-  if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
-    syncAmbientVideo();
-  }
-}
-
-function applySceneImageSequenceState() {
-  const btn = document.getElementById("toggleSceneImgSeq");
-  const label = document.getElementById("toggleSceneImgSeqState");
-  if (btn) btn.setAttribute("aria-checked", state.sceneUseImageSequence ? "true" : "false");
-  if (label) label.textContent = state.sceneUseImageSequence ? "On" : "Off";
-}
-
-function toggleSceneStripAudio() {
-  state.sceneStripAudio = !state.sceneStripAudio;
-  try {
-    localStorage.setItem(storageKeys.sceneStripAudio, state.sceneStripAudio ? "1" : "0");
-  } catch {}
-  applySceneStripState();
-  log(`Scene audio strip ${state.sceneStripAudio ? "enabled" : "disabled"}.`);
-  // Audio-strip only affects the <video> path. If we're running the image
-  // sequence, restarting via the video path would engage the firmware decoder
-  // and pause Spotify — so route through restartScene, which respects the mode.
-  if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
-    restartScene();
-  }
-}
-
-function applySceneStripState() {
-  const btn = document.getElementById("toggleSceneStrip");
-  const label = document.getElementById("toggleSceneStripState");
-  if (btn) btn.setAttribute("aria-checked", state.sceneStripAudio ? "true" : "false");
-  if (label) label.textContent = state.sceneStripAudio ? "On" : "Off";
-}
-
 function toggleAutoplaySimilar() {
   state.autoplaySimilar = !state.autoplaySimilar;
   try {
@@ -4365,7 +4225,6 @@ function applyDebugVisibility() {
     elements.diagnostics.hidden = !state.debugVisible;
   }
   invalidateFocusables();
-  if (state.debugVisible) updateImgseqDiag();
   if (elements.toggleDebugView) {
     elements.toggleDebugView.setAttribute("aria-checked", state.debugVisible ? "true" : "false");
   }
@@ -4385,732 +4244,613 @@ function handleAmbientModeArrow(direction) {
   return true;
 }
 
-// === Scene (screensaver) playback =============================================
-// Scene runs an A/B pair of <video> elements so the next clip can preload while
-// the current one plays; we crossfade by toggling .ambient-screensaver[data-active]
-// (opacity only — TV-safe). Sources, in priority order: silent MP4s from the
-// curated library (server-side audio strip → hardware decode, Spotify keeps
-// playing), legacy image-sequence clips, Pexels-direct (when a key is present),
-// then the bundled AMBIENT_VIDEOS loops. We advance manually (no reliance on
-// loop) so playback is perpetual and Skip can jump instantly.
+// === Procedural Scene =========================================================
+// Scene is a Roku-City-style layered illustration, generated entirely on the
+// client — no video, no network, no Firestore. The TV firmware pauses Spotify
+// whenever a <video> engages its decoder, so the old clip pipeline (silent MP4s,
+// Pexels, image sequences) was removed outright. Structure, back to front:
+//   #sceneSky        gradient sky + sun/moon glow (one static paint, palette-tinted)
+//   #sceneCanvas     30fps-capped particles: twinkling stars, drifting clouds
+//   #sceneLayerFar/Mid  silhouette SVGs with very slow CSS parallax drift
+//   #sceneFgCanvas   skyline only: car-light streaks between mid and near layers
+//   #sceneLayerNear  closest silhouette (treeline / lit buildings)
+//   #sceneMist       nature only: a slow-drifting haze band
+// Geometry is seeded (mulberry32) so Skip re-rolls a genuinely different scene;
+// palette/track changes re-tint colors in place without rebuilding geometry, so
+// the slow parallax never visibly jumps.
 
-function hasPexelsKey() {
-  try {
-    return Boolean(window.__PEXELS_KEY__);
-  } catch {
-    return false;
+// Deterministic PRNG: one seed → one scene. (Math.random only rolls new seeds.)
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function newSceneSeed() {
+  return (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+}
+
+// Entry follows the local clock; Skip re-rolls the flavor for variety.
+function sceneFlavorFromClock() {
+  const hour = new Date().getHours();
+  if (hour >= 21 || hour < 5) return "night";
+  if (hour < 10) return "dawn";
+  return "evening";
+}
+
+// --- color helpers (palette entries come from extractPalette as "rgb(r, g, b)") --
+function parseRgbColor(str) {
+  const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(str || "");
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function mixRgb(a, b, t) {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+  ];
+}
+
+function rgbCss(c, alpha) {
+  if (alpha === undefined) return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${alpha})`;
+}
+
+// Base sky stops per flavor (top → mid → horizon), glow tint, star strength.
+const SCENE_FLAVOR_COLORS = {
+  dawn: { top: [18, 28, 58], mid: [104, 74, 104], horizon: [222, 138, 92], glow: [255, 214, 170], stars: 0.35 },
+  evening: { top: [10, 18, 44], mid: [56, 52, 96], horizon: [204, 104, 72], glow: [255, 190, 130], stars: 0.6 },
+  night: { top: [4, 8, 18], mid: [14, 22, 46], horizon: [38, 48, 82], glow: [196, 210, 255], stars: 1 },
+};
+
+// Full color set for the current flavor + album palette. Mix weights stay low so
+// the scene reads as a dusk illustration that leans toward the record, never neon.
+function computeSceneColors() {
+  const flavor = SCENE_FLAVOR_COLORS[state.sceneFlavor] || SCENE_FLAVOR_COLORS.evening;
+  const palette = state.paletteCache.palette || [];
+  const accentA = parseRgbColor(palette[0]) || [30, 215, 96];
+  const accentB = parseRgbColor(palette[1] || palette[0]) || [112, 166, 255];
+  const baseDark = [7, 11, 20];
+  const horizon = mixRgb(flavor.horizon, accentA, 0.3);
+  return {
+    top: mixRgb(flavor.top, accentB, 0.16),
+    mid: mixRgb(flavor.mid, accentA, 0.22),
+    horizon,
+    glow: mixRgb(flavor.glow, accentA, 0.2),
+    starStrength: flavor.stars,
+    // Far layers sit in the haze (closest to the horizon color), near is darkest.
+    far: mixRgb(baseDark, horizon, 0.38),
+    midLayer: mixRgb(baseDark, horizon, 0.18),
+    near: mixRgb(baseDark, horizon, 0.06),
+  };
+}
+
+// --- geometry builders --------------------------------------------------------
+// Silhouettes render into a fixed viewBox stretched to the layer box
+// (preserveAspectRatio="none") so the paths can think in simple units.
+const SCENE_VB_W = 1200;
+const SCENE_VB_H = 320;
+
+function svgEl(tag) {
+  return document.createElementNS("http://www.w3.org/2000/svg", tag);
+}
+
+function buildLayerSvg(container) {
+  if (!container) return null;
+  container.replaceChildren();
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", `0 0 ${SCENE_VB_W} ${SCENE_VB_H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  container.appendChild(svg);
+  return svg;
+}
+
+function appendPath(svg, d) {
+  const path = svgEl("path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return path;
+}
+
+// Random-walk mountain ridge across the viewBox; straight segments read fine at
+// silhouette scale and keep the path tiny.
+function ridgePath(rand, peaks, minY, maxY) {
+  let y = minY + rand() * (maxY - minY);
+  let d = `M0 ${SCENE_VB_H} L0 ${Math.round(y)}`;
+  const step = SCENE_VB_W / peaks;
+  for (let i = 1; i <= peaks; i += 1) {
+    y += (rand() - 0.5) * (maxY - minY) * 0.9;
+    y = Math.max(minY, Math.min(maxY, y));
+    d += ` L${Math.round(i * step)} ${Math.round(y)}`;
+  }
+  d += ` L${SCENE_VB_W} ${SCENE_VB_H} Z`;
+  return d;
+}
+
+// Jagged pine treeline for the near nature layer: overlapping triangles.
+function treelinePath(rand) {
+  const baseY = 150 + rand() * 40;
+  let d = `M0 ${SCENE_VB_H} L0 ${Math.round(baseY)}`;
+  let x = 0;
+  while (x < SCENE_VB_W) {
+    const w = 16 + rand() * 30;
+    const treeH = 36 + rand() * 78;
+    const y = baseY + (rand() - 0.5) * 28;
+    d += ` L${Math.round(x + w / 2)} ${Math.round(y - treeH)} L${Math.round(x + w)} ${Math.round(y)}`;
+    x += w * (0.7 + rand() * 0.4); // overlap trees a little
+  }
+  d += ` L${SCENE_VB_W} ${SCENE_VB_H} Z`;
+  return d;
+}
+
+// Skyline silhouette: flat-topped buildings with optional antenna masts (masts
+// fill as part of the same path). Returns window/antenna positions so the
+// decorator can light them.
+function buildSkyline(rand, opts) {
+  let d = `M0 ${SCENE_VB_H}`;
+  let masts = "";
+  const windows = [];
+  const antennas = [];
+  let x = 0;
+  while (x < SCENE_VB_W) {
+    const w = opts.minW + rand() * (opts.maxW - opts.minW);
+    const x2 = Math.min(SCENE_VB_W, x + w);
+    const h = opts.minH + rand() * (opts.maxH - opts.minH);
+    const top = Math.round(SCENE_VB_H - h);
+    d += ` L${Math.round(x)} ${top} L${Math.round(x2)} ${top}`;
+    if (opts.windowChance && windows.length < 420) {
+      const cols = Math.floor((x2 - x - 8) / 13);
+      const rows = Math.floor((SCENE_VB_H - top - 12) / 17);
+      for (let r = 0; r < rows; r += 1) {
+        for (let c = 0; c < cols; c += 1) {
+          if (rand() < opts.windowChance) {
+            windows.push({ x: Math.round(x + 6 + c * 13), y: top + 8 + r * 17 });
+          }
+        }
+      }
+    }
+    if (opts.antennaChance && h > (opts.minH + opts.maxH) / 2 && rand() < opts.antennaChance) {
+      const ax = Math.round(x + (x2 - x) / 2);
+      const ah = 16 + Math.round(rand() * 20);
+      masts += ` M${ax - 1} ${top} h3 v${-ah} h-3 Z`;
+      antennas.push({ x: ax, y: top - ah });
+    }
+    x = x2 + (rand() < 0.14 ? 6 + rand() * 24 : 0); // occasional alley gap
+  }
+  d += ` L${SCENE_VB_W} ${SCENE_VB_H} Z${masts}`;
+  return { path: d, windows, antennas };
+}
+
+// Light a skyline layer: static lit windows batched into two path nodes (warm +
+// cool shades), a handful of twinkling windows, and blinking antenna tips. All
+// animation is opacity-only CSS keyframes — TV-safe.
+function decorateSkyline(svg, build, rand, intensity) {
+  const warm = [];
+  const cool = [];
+  for (const win of build.windows) {
+    (rand() < 0.82 ? warm : cool).push(win);
+  }
+  const size = intensity >= 1 ? { w: 5, h: 7 } : { w: 4, h: 6 };
+  appendWindowsPath(svg, warm, size, `rgba(255, 214, 138, ${(0.5 * intensity + 0.18).toFixed(2)})`);
+  appendWindowsPath(svg, cool, size, `rgba(170, 206, 255, ${(0.4 * intensity + 0.14).toFixed(2)})`);
+  const twinkles = build.windows.filter(() => rand() < 0.04).slice(0, 12);
+  for (const win of twinkles) {
+    const rect = svgEl("rect");
+    rect.setAttribute("x", win.x);
+    rect.setAttribute("y", win.y);
+    rect.setAttribute("width", size.w);
+    rect.setAttribute("height", size.h);
+    rect.setAttribute("fill", "rgba(255, 226, 160, 0.9)");
+    rect.setAttribute("class", "scene-twinkle");
+    rect.style.animationDelay = `${(rand() * 8).toFixed(1)}s`;
+    rect.style.animationDuration = `${(6 + rand() * 8).toFixed(1)}s`;
+    svg.appendChild(rect);
+  }
+  for (const ant of build.antennas.slice(0, 4)) {
+    const dot = svgEl("circle");
+    dot.setAttribute("cx", ant.x);
+    dot.setAttribute("cy", ant.y);
+    dot.setAttribute("r", 2.4);
+    dot.setAttribute("fill", "#ff5a52");
+    dot.setAttribute("class", "scene-blink");
+    dot.style.animationDelay = `${(rand() * 2.4).toFixed(1)}s`;
+    svg.appendChild(dot);
   }
 }
 
-// Auto-resume removed: the tug-of-war was bidirectional — resuming Spotify made
-// the video stop. The real fix is to strip the audio track out of Pexels MP4s
-// in-browser (see mp4box-based audio-stripping below), so the firmware never
-// sees a competing audio decoder in the first place.
-
-function sceneVideoEls() {
-  return { a: elements.ambientVideo, b: elements.ambientVideoB };
+function appendWindowsPath(svg, wins, size, fill) {
+  if (!wins.length) return;
+  let d = "";
+  for (const win of wins) d += `M${win.x} ${win.y}h${size.w}v${size.h}h${-size.w}Z`;
+  const path = svgEl("path");
+  path.setAttribute("d", d);
+  path.setAttribute("fill", fill);
+  svg.appendChild(path);
 }
 
-function activeSceneVideo() {
-  const { a, b } = sceneVideoEls();
-  return state.sceneActiveVideo === "b" ? b : a;
+function buildNatureLayers(rand, tintables) {
+  const far = buildLayerSvg(elements.sceneLayerFar);
+  const mid = buildLayerSvg(elements.sceneLayerMid);
+  const near = buildLayerSvg(elements.sceneLayerNear);
+  if (!far || !mid || !near) return;
+  tintables.paths.far.push(appendPath(far, ridgePath(rand, 6, 60, 200)));
+  tintables.paths.mid.push(appendPath(mid, ridgePath(rand, 9, 120, 250)));
+  tintables.paths.near.push(appendPath(near, treelinePath(rand)));
 }
 
-function inactiveSceneVideo() {
-  const { a, b } = sceneVideoEls();
-  return state.sceneActiveVideo === "b" ? a : b;
+function buildSkylineLayers(rand, tintables) {
+  const far = buildLayerSvg(elements.sceneLayerFar);
+  const mid = buildLayerSvg(elements.sceneLayerMid);
+  const near = buildLayerSvg(elements.sceneLayerNear);
+  if (!far || !mid || !near) return;
+  const farBuild = buildSkyline(rand, { minW: 28, maxW: 60, minH: 60, maxH: 170, windowChance: 0 });
+  const midBuild = buildSkyline(rand, { minW: 36, maxW: 80, minH: 90, maxH: 215, windowChance: 0.14, antennaChance: 0.2 });
+  const nearBuild = buildSkyline(rand, { minW: 52, maxW: 112, minH: 110, maxH: 280, windowChance: 0.26, antennaChance: 0.45 });
+  tintables.paths.far.push(appendPath(far, farBuild.path));
+  tintables.paths.mid.push(appendPath(mid, midBuild.path));
+  tintables.paths.near.push(appendPath(near, nearBuild.path));
+  decorateSkyline(mid, midBuild, rand, 0.55);
+  decorateSkyline(near, nearBuild, rand, 1);
 }
 
-// On the TV (old Blink) a muted <video> that still carries an audio track grabs the
-// single hardware audio decoder / audio focus, which pauses the Spotify Web Playback
-// SDK — and when Spotify plays, the video stalls. They become mutually exclusive.
-// Desktop Chromium handles muted video fine, so this is purely defensive for the TV.
-// The HTML `muted` attribute alone isn't enough; we force the muting properties AND
-// disable the clip's audio tracks outright so the video never enters the audio
-// pipeline. audioTracks populates after loadedmetadata, so call this then too.
-function silenceVideoEl(el) {
-  if (!el) return;
-  el.muted = true;
-  el.defaultMuted = true;
-  el.volume = 0;
-  try { el.disableRemotePlayback = true; } catch {}
-  const tracks = el.audioTracks;
-  if (tracks && typeof tracks.length === "number") {
-    for (let i = 0; i < tracks.length; i += 1) {
-      try { tracks[i].enabled = false; } catch {}
+// Re-tint the live scene from the current flavor + album palette. Touches only
+// inline colors (sky background, silhouette fills, mist) — geometry and the CSS
+// drift animations are untouched, so nothing jumps on track change.
+function applySceneTint() {
+  const t = state.sceneTintables;
+  const sky = elements.sceneSky;
+  if (!t || !sky) return;
+  const colors = computeSceneColors();
+  sky.style.background =
+    `radial-gradient(circle at ${t.glowX}% ${t.glowY}%, ${rgbCss(colors.glow, 0.85)} 0%, ${rgbCss(colors.glow, 0.32)} 4%, ${rgbCss(colors.glow, 0.12)} 16%, rgba(0, 0, 0, 0) 40%), ` +
+    `linear-gradient(180deg, ${rgbCss(colors.top)} 0%, ${rgbCss(colors.mid)} 58%, ${rgbCss(colors.horizon)} 100%)`;
+  const fills = { far: colors.far, mid: colors.midLayer, near: colors.near };
+  for (const depth of ["far", "mid", "near"]) {
+    for (const node of t.paths[depth]) node.setAttribute("fill", rgbCss(fills[depth]));
+  }
+  if (elements.sceneMist) {
+    elements.sceneMist.style.background =
+      `linear-gradient(180deg, rgba(0, 0, 0, 0), ${rgbCss(colors.horizon, 0.16)} 45%, rgba(0, 0, 0, 0))`;
+  }
+}
+
+// --- particle canvas ----------------------------------------------------------
+// One full-bleed canvas behind the silhouettes (stars + clouds) and, for the
+// skyline, a short band canvas between mid and near layers (car streaks). Both
+// share a single 30fps-capped rAF loop, mirroring the visualizer's budget.
+
+// Cloud sprites are pre-rendered once per build — the frame loop only ever
+// drawImages them, never rebuilds gradients.
+function makeCloudSprite(rand) {
+  const w = 320;
+  const h = 130;
+  const sprite = document.createElement("canvas");
+  sprite.width = w;
+  sprite.height = h;
+  const ctx = sprite.getContext("2d");
+  if (!ctx) return sprite;
+  const blobs = 5 + Math.floor(rand() * 3);
+  for (let i = 0; i < blobs; i += 1) {
+    const bx = w * (0.18 + rand() * 0.64);
+    const by = h * (0.35 + rand() * 0.3);
+    const br = 30 + rand() * 52;
+    const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+    g.addColorStop(0, "rgba(226, 231, 245, 0.55)");
+    g.addColorStop(1, "rgba(226, 231, 245, 0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(bx - br, by - br, br * 2, br * 2);
+  }
+  return sprite;
+}
+
+function buildSceneParticles(rand, colors) {
+  const cat = state.sceneCategory || "nature";
+  const night = state.sceneFlavor === "night";
+  const starCount = Math.round((cat === "skyline" ? 90 : 130) * (0.4 + 0.6 * colors.starStrength));
+  const stars = [];
+  for (let i = 0; i < starCount; i += 1) {
+    stars.push({
+      u: rand(),
+      v: rand() * rand() * 0.62, // bias toward the top of the sky
+      // 2–3px reads as a star from couch distance at 1080p; 1px vanishes.
+      r: rand() < 0.8 ? 2 : 3,
+      base: 0.3 + rand() * 0.55,
+      speed: 0.4 + rand() * 1.2,
+      phase: rand() * Math.PI * 2,
+    });
+  }
+  const clouds = [];
+  const cloudCount = night ? 2 : 3 + Math.floor(rand() * 3);
+  for (let i = 0; i < cloudCount; i += 1) {
+    clouds.push({
+      sprite: makeCloudSprite(rand),
+      u: rand(),
+      v: 0.06 + rand() * 0.3,
+      scale: 0.7 + rand() * 0.9,
+      speed: (0.004 + rand() * 0.006) * (rand() < 0.5 ? 1 : -1), // u-units/second
+      alpha: night ? 0.05 + rand() * 0.05 : 0.08 + rand() * 0.08,
+    });
+  }
+  const cars = [];
+  if (cat === "skyline") {
+    for (let i = 0; i < 7; i += 1) {
+      const toward = rand() < 0.5;
+      cars.push({
+        u: rand() * 1.2 - 0.1,
+        lane: toward ? 0 : 1,
+        dir: toward ? 1 : -1,
+        speed: 0.05 + rand() * 0.05, // u-units/second
+        len: 0.02 + rand() * 0.025,
+        white: toward,
+      });
     }
   }
+  state.sceneParticles = {
+    stars,
+    clouds,
+    cars,
+    starStrength: colors.starStrength,
+    starColor: "#dce6ff",
+    shoot: null,
+    nextShootAt: (typeof performance !== "undefined" ? performance.now() : 0) + 20000,
+  };
 }
 
-// === Audio stripping for Pexels Scene clips ==================================
-// The TV firmware only allows one audio decoder at a time, so a muted Pexels clip
-// (which still carries an AAC track) tugs audio focus away from the Spotify SDK.
-// We can't strip the audio at the HTTP layer, so we demux the MP4 in-browser with
-// mp4box.js and feed only the video samples to the <video> via MediaSource
-// Extensions. The firmware sees a track-less video and never engages its audio
-// decoder, so Spotify keeps playing.
-//
-// This is opt-in via Settings -> "Scene: strip audio (experimental)". If anything
-// in the pipeline fails (MSE not supported, mp4box throws, codec rejected), we
-// fall back to the plain <video src=url> path so Scene at least shows clips.
+// Measure both canvases once (and on resize) — never inside the frame loop.
+// DPR is pinned to 1 on purpose: the particles are soft dots/glows, and halving
+// the fill budget matters far more on the VIDAA GPU than retina stars.
+function measureSceneCanvas() {
+  const canvas = elements.sceneCanvas;
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const fg = elements.sceneFgCanvas;
+  if (fg) {
+    const fr = fg.getBoundingClientRect();
+    const fw = Math.max(1, Math.floor(fr.width));
+    const fh = Math.max(1, Math.floor(fr.height));
+    if (fg.width !== fw || fg.height !== fh) {
+      fg.width = fw;
+      fg.height = fh;
+    }
+  }
+  state.sceneRect = { w, h };
+}
 
-// Visible status badge on the Scene now-playing card. State is one of:
-//   "idle"   — Scene not running
-//   "silent" — server-side silent MP4 (no audio track at all; the safe path)
-//   "strip"  — mp4box+MSE actively delivering an audio-stripped video stream
-//   "plain"  — Strip path unavailable / off: playing original URL (conflict-prone)
-//   "error"  — A clip failed to load entirely
-function setSceneStripStatus(state, detail) {
+function startSceneCanvas() {
+  if (state.sceneRaf) return;
+  const canvas = elements.sceneCanvas;
+  const ctx = canvas ? canvas.getContext("2d") : null;
+  if (!ctx || !state.sceneParticles) return;
+  const fg = elements.sceneFgCanvas;
+  const fgCtx = fg ? fg.getContext("2d") : null;
+  const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  measureSceneCanvas();
+  if (!state.sceneResizeHandler) {
+    state.sceneResizeHandler = () => measureSceneCanvas();
+    window.addEventListener("resize", state.sceneResizeHandler);
+  }
+  // Same budget as the visualizer: 30fps cap keeps the canvas work cheap.
+  const frameInterval = 1000 / 30;
+  let lastFrame = 0;
+  let lastDraw = 0;
+  const draw = (ts) => {
+    if (state.ambientMode !== "screensaver" || state.currentView !== "ambient") {
+      stopSceneCanvas();
+      return;
+    }
+    state.sceneRaf = prefersReduced ? 0 : window.requestAnimationFrame(draw);
+    if (!prefersReduced && ts - lastFrame < frameInterval) return;
+    lastFrame = ts || 0;
+    const dt = prefersReduced || !lastDraw ? 0 : Math.min(0.2, (ts - lastDraw) / 1000);
+    lastDraw = ts || 0;
+    drawSceneFrame(ctx, fgCtx, ts || 0, dt);
+  };
+  state.sceneRaf = window.requestAnimationFrame(draw);
+}
+
+function stopSceneCanvas() {
+  if (state.sceneRaf) {
+    window.cancelAnimationFrame(state.sceneRaf);
+    state.sceneRaf = 0;
+  }
+  if (state.sceneResizeHandler) {
+    window.removeEventListener("resize", state.sceneResizeHandler);
+    state.sceneResizeHandler = null;
+  }
+  state.sceneRect = null;
+}
+
+function drawSceneFrame(ctx, fgCtx, ts, dt) {
+  const rect = state.sceneRect;
+  const p = state.sceneParticles;
+  if (!rect || !p) return;
+  const { w, h } = rect;
+  const t = ts / 1000;
+  ctx.clearRect(0, 0, w, h);
+
+  // Stars: tiny rects, sine twinkle. fillStyle stays constant — only globalAlpha
+  // varies per star, which is cheap on 2D canvas.
+  ctx.fillStyle = p.starColor;
+  for (const star of p.stars) {
+    const tw = 0.55 + 0.45 * Math.sin(t * star.speed + star.phase);
+    ctx.globalAlpha = star.base * tw * p.starStrength;
+    ctx.fillRect(star.u * w, star.v * h, star.r, star.r);
+  }
+
+  // The occasional shooting star, night skies only.
+  if (p.starStrength > 0.8) drawShootingStar(ctx, p, w, h, ts);
+
+  // Clouds drift horizontally and wrap around with margin.
+  for (const cloud of p.clouds) {
+    cloud.u += cloud.speed * dt;
+    if (cloud.u > 1.25) cloud.u = -0.25;
+    if (cloud.u < -0.25) cloud.u = 1.25;
+    const cw = cloud.sprite.width * cloud.scale * (w / 1280);
+    const ch = cloud.sprite.height * cloud.scale * (w / 1280);
+    ctx.globalAlpha = cloud.alpha;
+    ctx.drawImage(cloud.sprite, cloud.u * w - cw / 2, cloud.v * h, cw, ch);
+  }
+  ctx.globalAlpha = 1;
+
+  if (fgCtx && p.cars.length) drawSceneCars(fgCtx, p, dt);
+}
+
+function drawShootingStar(ctx, p, w, h, ts) {
+  if (!p.shoot && ts >= p.nextShootAt) {
+    p.shoot = { x: 0.15 + Math.random() * 0.6, y: 0.05 + Math.random() * 0.2, start: ts };
+  }
+  if (!p.shoot) return;
+  const life = (ts - p.shoot.start) / 900; // ~0.9s streak
+  if (life >= 1) {
+    p.shoot = null;
+    p.nextShootAt = ts + 25000 + Math.random() * 35000;
+    return;
+  }
+  const slide = 0.18 * life;
+  const x = (p.shoot.x + slide) * w;
+  const y = (p.shoot.y + slide * 0.45) * h;
+  const fade = life < 0.2 ? life / 0.2 : 1 - (life - 0.2) / 0.8;
+  ctx.globalAlpha = 0.7 * fade;
+  ctx.strokeStyle = "#dfe8ff";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x - 26, y - 12);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+// Car-light streaks on the elevated-road band: bright head, two stepped tail
+// rects standing in for a gradient (no per-frame gradient builds). The near
+// buildings overlap this canvas, so cars pass "behind" the foreground.
+function drawSceneCars(fgCtx, p, dt) {
+  const fw = fgCtx.canvas.width;
+  const fh = fgCtx.canvas.height;
+  fgCtx.clearRect(0, 0, fw, fh);
+  for (const car of p.cars) {
+    car.u += car.speed * car.dir * dt;
+    if (car.dir > 0 && car.u > 1.15) car.u = -0.15;
+    if (car.dir < 0 && car.u < -0.15) car.u = 1.15;
+    const y = (car.lane === 0 ? 0.42 : 0.66) * fh;
+    const len = car.len * fw;
+    const head = car.u * fw;
+    fgCtx.fillStyle = car.white ? "#e8ecff" : "#ff5a4a";
+    fgCtx.globalAlpha = 0.85;
+    fgCtx.fillRect(head, y, 3, 2);
+    fgCtx.globalAlpha = 0.4;
+    fgCtx.fillRect(Math.min(head, head - car.dir * len * 0.5), y, len * 0.5, 2);
+    fgCtx.globalAlpha = 0.16;
+    fgCtx.fillRect(Math.min(head, head - car.dir * len), y, len, 2);
+  }
+  fgCtx.globalAlpha = 1;
+}
+
+// --- orchestration -------------------------------------------------------------
+
+// Debug-only status badge on the Scene now-playing card: which renderer is live.
+function setSceneStatus(stateName, detail) {
   const el = elements.sceneNpStatus;
   if (!el) return;
-  el.dataset.state = state;
+  el.dataset.state = stateName;
   const labels = {
     idle: "Scene: idle",
-    silent: `Silent clip${detail ? " · " + detail : ""}`,
-    strip: `Audio stripped${detail ? " · " + detail : ""}`,
-    plain: `Audio active${detail ? " · " + detail : ""}`,
-    error: `Clip failed${detail ? " · " + detail : ""}`,
+    procedural: `Procedural scene${detail ? " · " + detail : ""}`,
+    error: `Scene error${detail ? " · " + detail : ""}`,
   };
-  el.textContent = labels[state] || state;
+  el.textContent = labels[stateName] || stateName;
 }
 
-// Web Audio sink neutralization: route a video element's audio output through
-// Web Audio with a zero-gain node. Some firmwares respect Web Audio's sink as
-// the active audio surface, which can prevent the native video pipeline from
-// grabbing audio focus when an audio track slips through (e.g., when the strip
-// path falls back to plain URL). createMediaElementSource can only be called
-// once per element, so we track which ones we've already routed.
-const _webAudioRouted = new WeakSet();
-function neutralizeVideoAudioWithWebAudio(videoEl) {
-  if (!videoEl || _webAudioRouted.has(videoEl)) return;
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const src = ctx.createMediaElementSource(videoEl);
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    src.connect(gain);
-    gain.connect(ctx.destination);
-    _webAudioRouted.add(videoEl);
-  } catch {
-    // Already routed, insecure context, or unsupported — best-effort.
-  }
-}
-
-function audioStripSupported() {
-  try {
-    return (
-      typeof window.MediaSource !== "undefined" &&
-      typeof window.MP4Box !== "undefined" &&
-      typeof window.fetch !== "undefined" &&
-      typeof Response !== "undefined"
-    );
-  } catch {
-    return false;
-  }
-}
-
-// Returns a Promise that resolves once the video element is playing (or rejects
-// on demux/MSE failure so callers can fall back to the plain URL path).
-async function playSceneClipStripped(videoEl, url, tokenRef) {
-  if (!audioStripSupported()) throw new Error("Audio strip not supported");
-
-  // Clear any previous Blob URL on this element (its old MediaSource is dead).
-  try { URL.revokeObjectURL(videoEl.src); } catch {}
-
-  const ms = new MediaSource();
-  videoEl.src = URL.createObjectURL(ms);
-  state.sceneStripBlobs.push(videoEl.src);
-
-  await new Promise((resolve, reject) => {
-    const onOpen = () => { ms.removeEventListener("sourceopen", onOpen); resolve(); };
-    const onErr = (e) => { ms.removeEventListener("error", onErr); reject(e || new Error("MediaSource error")); };
-    ms.addEventListener("sourceopen", onOpen);
-    ms.addEventListener("error", onErr);
-  });
-
-  return new Promise((resolve, reject) => {
-    const mp4box = window.MP4Box.createFile();
-    let sourceBuffer = null;
-    let videoTrackId = null;
-    let appendQueue = [];
-    let mp4boxStopped = false;
-
-    const tryAppend = () => {
-      if (!sourceBuffer || sourceBuffer.updating || !appendQueue.length) return;
-      const next = appendQueue.shift();
-      try { sourceBuffer.appendBuffer(next.buffer); } catch (e) { reject(e); }
-      if (next.is_last) {
-        sourceBuffer.addEventListener("updateend", () => {
-          try { ms.endOfStream(); } catch {}
-        }, { once: true });
-      }
-    };
-
-    mp4box.onReady = (info) => {
-      // Token check: if user left Scene while we were loading, bail.
-      if (tokenRef.cancelled) { mp4boxStopped = true; reject(new Error("Cancelled")); return; }
-      const videoTrack = info.tracks.find((t) => t.type === "video");
-      if (!videoTrack) { reject(new Error("No video track in MP4")); return; }
-      videoTrackId = videoTrack.id;
-      // mp4box gives us a codec string like "avc1.640028" — exactly what MSE wants.
-      const mime = `video/mp4; codecs="${videoTrack.codec}"`;
-      if (!window.MediaSource.isTypeSupported(mime)) { reject(new Error(`MIME not supported: ${mime}`)); return; }
-      // We have a confirmed video-only feed coming. Mark status so the user can
-      // see at a glance that the strip path is actually engaged.
-      setSceneStripStatus("strip", videoTrack.codec);
-      try {
-        sourceBuffer = ms.addSourceBuffer(mime);
-      } catch (e) { reject(e); return; }
-      sourceBuffer.mode = "segments";
-      sourceBuffer.addEventListener("updateend", tryAppend);
-
-      mp4box.setSegmentOptions(videoTrack.id, null, { nbSamples: 60 });
-      const initSegs = mp4box.initializeSegmentation();
-      for (const seg of initSegs) {
-        if (seg.id === videoTrack.id) appendQueue.push({ buffer: seg.buffer, is_last: false });
-      }
-      tryAppend();
-      mp4box.start();
-    };
-
-    mp4box.onSegment = (id, _user, buffer, _sampleNum, is_last) => {
-      if (mp4boxStopped) return;
-      if (id !== videoTrackId) return;
-      appendQueue.push({ buffer, is_last });
-      tryAppend();
-    };
-
-    mp4box.onError = (e) => { reject(new Error(`mp4box error: ${e}`)); };
-
-    // Stream the MP4 in. We feed appendBuffer with fileStart offsets so mp4box
-    // can keep its internal byte map; we don't need the whole file in memory.
-    (async () => {
-      try {
-        const response = await fetch(url);
-        if (!response.ok) { reject(new Error(`Fetch failed ${response.status}`)); return; }
-        const reader = response.body.getReader();
-        let offset = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          if (tokenRef.cancelled) { reject(new Error("Cancelled")); return; }
-          const { done, value } = await reader.read();
-          if (done) { mp4box.flush(); break; }
-          const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-          ab.fileStart = offset;
-          offset += value.byteLength;
-          mp4box.appendBuffer(ab);
-        }
-      } catch (err) { reject(err); }
-    })();
-
-    // Kick playback once enough has buffered. play() can reject if the firmware
-    // refuses the source — surface that so the caller falls back.
-    videoEl.addEventListener("canplay", () => {
-      videoEl.play().then(resolve).catch(reject);
-    }, { once: true });
-  });
-}
-
-function clearSceneStripBlobs() {
-  for (const url of state.sceneStripBlobs) {
-    try { URL.revokeObjectURL(url); } catch {}
-  }
-  state.sceneStripBlobs = [];
-}
-
-// === Image-sequence Scene renderer ==========================================
-// The TV's firmware pauses other media when a <video> decodes. Image sequences
-// don't engage that pipeline at all — we just swap an <img> element's src at
-// the source fps, which the renderer treats like any other image update.
-//
-// We rely on the Cloud Function-curated library in Firestore: each "clip" is
-// an array of pre-generated JPG URLs at a known fps. Local cycling is cheap.
-
-function stopImageSequence() {
-  if (state.sceneImageTimer) {
-    window.clearInterval(state.sceneImageTimer);
-    state.sceneImageTimer = 0;
-  }
-  // Drop the decoded-frame references so they can be GC'd; the next clip rebuilds
-  // its own buffer. Without this the held Images accumulate across clip swaps.
-  state.imgseqPreloaded = [];
-}
-
-// Diagnostics for the image-sequence path. Surfaced in the Debug overlay so we
-// can see on the TV exactly which clip is loading, how many frames it has, and
-// where the renderer is in the cycle. Merging-style writes so callers only set
-// the fields they know about.
-function setImgseqDiag(patch) {
-  Object.assign(state.imgseqDiag, patch);
-  updateImgseqDiag();
-}
-
-function updateImgseqDiag() {
-  const el = elements.imgseqFacts;
-  if (!el) return;
-  const d = state.imgseqDiag || {};
-  const frame = d.frameIndex >= 0 && d.frameCount
-    ? `${d.frameIndex + 1} / ${d.frameCount} @ ${d.fps || "?"}fps`
-    : "—";
-  const errorRow = d.lastError ? `<dt>Error</dt><dd class="imgseq-err">${escapeHtml(d.lastError)}</dd>` : "";
-  el.innerHTML =
-    `<dt>Library</dt><dd>${escapeHtml(d.library || "—")}</dd>` +
-    `<dt>Clip</dt><dd>${escapeHtml(d.clipId || "—")}</dd>` +
-    `<dt>Frame</dt><dd>${frame}</dd>` +
-    `<dt>Last frame</dt><dd>${escapeHtml(d.lastFrameStatus || "—")}</dd>` +
-    errorRow;
-}
-
-async function playImageSequence(clip, token) {
-  stopImageSequence();
-  const img = elements.ambientImgSeq;
-  if (!img || !clip || !clip.frames?.length) throw new Error("No frames");
-
-  const fps = clip.fps || 10;
-  // Cap the loop length: bounds the up-front buffer and held memory, and lets the
-  // first frame show promptly even for very long clips.
-  const wanted = clip.frames.slice(0, SCENE_MAX_FRAMES);
-
-  setImgseqDiag({
-    clipId: clip.id,
-    frameCount: wanted.length,
-    fps,
-    frameIndex: -1,
-    sourceUrl: wanted[0],
-    lastFrameStatus: `buffering 0/${wanted.length}…`,
-    lastError: "",
-    startedAt: Date.now(),
-  });
-  setSceneStripStatus("strip", `buffering 0/${wanted.length}`);
-
-  // Fully preload the (capped) clip BEFORE animating, and hold every decoded
-  // Image for the clip's lifetime. This keeps the frames in the memory cache so
-  // swapping the visible <img>.src hits cache instead of the network — which is
-  // what was stuttering/stalling when we preloaded only a handful and fetched the
-  // rest live at 10fps. We animate over just the frames that actually loaded, so
-  // a few unreachable frames shorten the loop instead of blinking to broken ones.
-  const loaded = [];
-  let done = 0;
-  await Promise.all(wanted.map((url) => new Promise((resolve) => {
-    const probe = new Image();
-    const finish = (ok) => {
-      done += 1;
-      if (ok) loaded.push({ url, img: probe });
-      if (done % 8 === 0 || done === wanted.length) {
-        setImgseqDiag({ lastFrameStatus: `buffering ${done}/${wanted.length}…` });
-        setSceneStripStatus("strip", `buffering ${done}/${wanted.length}`);
-      }
-      resolve();
-    };
-    probe.onload = () => finish(true);
-    probe.onerror = () => finish(false);
-    probe.src = url;
-  })));
-  if (state.sceneToken !== token) return;
-
-  if (!loaded.length) {
-    setImgseqDiag({ lastError: `0/${wanted.length} frames loaded (unreachable)` });
-    throw new Error(`Frames unreachable (0/${wanted.length} loaded)`);
-  }
-
-  // Promise.all resolves in completion order, not source order — restore the
-  // original frame ordering so the loop plays forward.
-  const order = new Map(wanted.map((url, idx) => [url, idx]));
-  loaded.sort((p, q) => order.get(p.url) - order.get(q.url));
-  const frames = loaded.map((p) => p.url);
-  state.imgseqPreloaded = loaded.map((p) => p.img);
-
-  // Mark the screensaver as imgseq-mode so CSS hides the <video> elements and
-  // shows the <img>. setSceneStripStatus advertises which path is live.
-  if (elements.ambientScreensaver) elements.ambientScreensaver.dataset.video = "imgseq";
-  setSceneStripStatus("strip", `imgseq ${frames.length}f@${fps}fps`);
-  setImgseqDiag({ frameCount: frames.length, lastFrameStatus: `ready ${frames.length}/${wanted.length}` });
-
-  // Surface frame load issues to the diag panel; one failed swap shouldn't kill
-  // the cycle, but a sustained failure run is the kind of thing we want visible.
-  img.onload = () => setImgseqDiag({ lastFrameStatus: "ok" });
-  img.onerror = () => setImgseqDiag({ lastFrameStatus: "frame error", lastError: `frame load failed: ${img.src}` });
-
-  const interval = Math.max(60, Math.round(1000 / fps));
-  let i = 0;
-  img.src = frames[0];
-  setImgseqDiag({ frameIndex: 0 });
-  state.sceneImageTimer = window.setInterval(() => {
-    if (state.sceneToken !== token) { stopImageSequence(); return; }
-    i = (i + 1) % frames.length;
-    img.src = frames[i];
-    state.imgseqDiag.frameIndex = i;
-    // Throttle the DOM update — touching innerHTML at 10fps is fine but pointless.
-    if (i % 10 === 0) updateImgseqDiag();
-  }, interval);
-}
-
-// Pick a random clip from the loaded library matching the user's category.
-// kind narrows to "video" (silent MP4s) or "frames" (legacy image sequences).
-function pickLibraryClip(library, kind) {
-  const cat = state.sceneCategory || "nature";
-  let list = library[cat] || [];
-  if (kind) list = list.filter((clip) => clip.kind === kind);
-  if (!list.length) return null;
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-// Called by setAmbientMode + setView. Decides whether Scene should be running and
-// kicks off (or stops) playback. Stopping pauses both elements without tearing
-// down sources, so returning to Scene resumes quickly.
-function syncAmbientVideo() {
+// Build (or rebuild) the procedural scene. reseed=true rolls a new seed AND a
+// new flavor so Skip/category changes produce a genuinely different picture;
+// reseed=false (first entry) keeps any existing seed and follows the clock.
+function buildProceduralScene(reseed) {
   const screensaver = elements.ambientScreensaver;
-  const { a, b } = sceneVideoEls();
-  if (!screensaver || !a) return;
+  const sky = elements.sceneSky;
+  if (!screensaver || !sky) return;
+  stopSceneCanvas();
+  try {
+    if (reseed || !state.sceneSeed) {
+      state.sceneSeed = newSceneSeed();
+      state.sceneFlavor = reseed
+        ? SCENE_FLAVORS[Math.floor(Math.random() * SCENE_FLAVORS.length)]
+        : sceneFlavorFromClock();
+    }
+    if (!state.sceneFlavor) state.sceneFlavor = sceneFlavorFromClock();
+    const cat = state.sceneCategory || "nature";
+    const rand = mulberry32(state.sceneSeed);
+
+    const tintables = {
+      // Sun/moon position is part of the seed: low near the horizon for
+      // dawn/evening sun, higher in the sky for the night moon.
+      glowX: 18 + Math.round(rand() * 64),
+      glowY: state.sceneFlavor === "night" ? 12 + Math.round(rand() * 22) : 58 + Math.round(rand() * 18),
+      paths: { far: [], mid: [], near: [] },
+    };
+    if (cat === "skyline") {
+      buildSkylineLayers(rand, tintables);
+    } else {
+      buildNatureLayers(rand, tintables);
+    }
+    state.sceneTintables = tintables;
+    screensaver.dataset.category = cat;
+    applySceneTint();
+    buildSceneParticles(rand, computeSceneColors());
+    state.sceneBuiltKey = `${cat}:${state.sceneSeed}`;
+    setSceneStatus("procedural", SCENE_CATEGORY_LABELS[cat]);
+    log(`Scene: procedural ${cat} (${state.sceneFlavor}, seed ${state.sceneSeed}).`, "success");
+    startSceneCanvas();
+  } catch (err) {
+    const msg = err?.message || String(err);
+    setSceneStatus("error", msg);
+    log(`Scene: procedural build failed: ${msg}`, "error");
+  }
+}
+
+// Called by setAmbientMode + setView. Decides whether the procedural Scene
+// should be live. Pausing drops .is-live (CSS parallax/twinkle animations stop
+// costing the compositor) and cancels the particle rAF; the built DOM stays so
+// returning to Scene resumes instantly.
+function syncAmbientScene() {
+  const screensaver = elements.ambientScreensaver;
+  if (!screensaver) return;
   const shouldPlay = state.currentView === "ambient" && state.ambientMode === "screensaver";
   if (!shouldPlay) {
-    // Bump the token so any in-flight fetch/load callbacks become no-ops.
-    state.sceneToken += 1;
-    try { a.pause(); } catch {}
-    try { b?.pause(); } catch {}
-    stopImageSequence();
-    clearSceneStripBlobs();
-    setSceneStripStatus("idle");
+    stopSceneCanvas();
+    screensaver.classList.remove("is-live");
+    setSceneStatus("idle");
     return;
   }
-
-  // Image-sequence path: bypass <video> entirely, animate <img> frames from
-  // the pre-converted library. The Cloud Function refreshes this set weekly.
-  if (state.sceneUseImageSequence) {
-    startImageSequencePlayback();
-    return;
-  }
-  // Already running with a visible clip — resume it. Re-arm the onended advance
-  // with a fresh token (the previous token was invalidated when Scene was paused).
-  if (screensaver.dataset.video === "on" && activeSceneVideo()?.currentSrc) {
-    const token = ++state.sceneToken;
-    const current = activeSceneVideo();
-    silenceVideoEl(current);
-    current.onended = () => {
-      if (token !== state.sceneToken) return;
-      advanceSceneClip(token);
-    };
-    current.play().catch(() => {});
-    return;
-  }
-  startScenePlayback();
-}
-
-// Image-sequence Scene: pull the pre-converted library from Firestore and pick
-// a random clip in the user's category. We cycle frames until the user leaves
-// Scene or category changes (token bump cancels the loop), then pick another.
-async function startImageSequencePlayback() {
-  const token = ++state.sceneToken;
-  const screensaver = elements.ambientScreensaver;
-  if (!screensaver) return;
-
-  // Stale-cancel guard: any token bump (leaving Scene, category change, recursion)
-  // makes this run a no-op at the next checkpoint — no polling watcher needed.
-  try {
-    setSceneStripStatus("strip", "loading library…");
-    setImgseqDiag({ library: "loading…", lastError: "", clipId: "", frameIndex: -1, frameCount: 0 });
-    const library = await loadSceneLibrary();
-    if (state.sceneToken !== token) return;
-    setImgseqDiag({ library: `nature:${(library.nature || []).length} skyline:${(library.skyline || []).length}` });
-    const clip = pickLibraryClip(library, "frames");
-    if (!clip) {
-      // Why not fall back to <video>: that engages the firmware decoder, which
-      // pauses Spotify on this TV. Better to sit on the generative drift scene
-      // and let the user see what went wrong than to silently kill the music.
-      const msg = "Scene library has no clips for this category.";
-      log(`Scene imgseq: ${msg}`, "warn");
-      showToast(msg, "warn");
-      setSceneStripStatus("plain", "library empty");
-      setImgseqDiag({ lastError: "library empty for category" });
-      screensaver.dataset.video = "off";
-      return;
-    }
-    await playImageSequence(clip, token);
-
-    // When this clip's frames have cycled a few times, advance to another one.
-    // Random advance keeps it feeling like the old multi-clip rotation.
-    const cycleMs = (clip.frames.length / (clip.fps || 10)) * 1000;
-    window.setTimeout(() => {
-      if (state.sceneToken !== token) return;
-      // Recurse to pick a new random clip.
-      startImageSequencePlayback();
-    }, Math.max(8000, cycleMs * 2));
-  } catch (err) {
-    if (state.sceneToken !== token) return;
-    const msg = err?.message || String(err);
-    log(`Scene imgseq failed: ${msg} (staying on generative scene to keep music playing).`, "warn");
-    showToast(`Imgseq error: ${msg}`, "warn");
-    setSceneStripStatus("error", msg);
-    setImgseqDiag({ lastError: msg });
-    // Crucially: do NOT call startScenePlayback() here. The <video> path
-    // engages the firmware decoder and pauses Spotify on this TV. Drop to the
-    // generative drift scene instead so audio keeps going.
-    screensaver.dataset.video = "off";
-    stopImageSequence();
-  }
-}
-
-// Build (or rebuild) the in-memory playlist for the current category, then begin
-// playing the first clip. Priority: silent MP4s from the curated library (no
-// audio track at all → the TV firmware audio pipeline never engages, so Spotify
-// keeps playing) → legacy image-sequence clips → Pexels-direct → bundled loops
-// → generative drift.
-function startScenePlayback() {
-  const token = ++state.sceneToken;
-  startSilentScene(token);
-}
-
-// Try the curated silent-MP4 library first. Falls through to the legacy
-// image-sequence clips, then the Pexels-direct path, on empty/error.
-async function startSilentScene(token) {
-  try {
-    setSceneStripStatus("silent", "loading library…");
-    const library = await loadSceneLibrary();
-    if (token !== state.sceneToken) return;
-    const cat = state.sceneCategory || "nature";
-    const silentClips = (library[cat] || []).filter((clip) => clip.kind === "video" && clip.videoUrl);
-    if (silentClips.length) {
-      state.sceneSource = "silent";
-      state.scenePlaylist = shuffleArray(silentClips.map((clip) => clip.videoUrl));
-      state.scenePlaylistIndex = -1;
-      log(`Scene: loaded ${state.scenePlaylist.length} silent ${cat} clips from the library.`, "success");
-      advanceSceneClip(token);
-      return;
-    }
-    // No silent clips yet (library not refreshed since the backend change) —
-    // legacy image-sequence clips are the next-safest path for Spotify audio.
-    if ((library[cat] || []).some((clip) => clip.kind === "frames")) {
-      log("Scene: no silent clips in library; falling back to image-sequence clips.");
-      startImageSequencePlayback();
-      return;
-    }
-    log("Scene: library has no clips for this category; trying Pexels.", "warn");
-  } catch (err) {
-    if (token !== state.sceneToken) return;
-    log(`Scene: library load failed (${err?.message || err}); trying Pexels.`, "warn");
-  }
-  beginPexelsScene(token);
-}
-
-// Pexels-direct path (original clips, audio track intact — conflict-prone on
-// the TV, hence last before the bundled loops). Any failure falls back to the
-// bundled loops via beginLocalScene().
-function beginPexelsScene(token) {
-  if (token !== state.sceneToken) return;
-  if (!hasPexelsKey()) {
-    log("Scene: no Pexels key present; using bundled ambient loops.");
-    beginLocalScene(token);
-    return;
-  }
-  if (state.sceneFetchInFlight) return;
-  state.sceneFetchInFlight = true;
-  fetchPexelsScene(state.sceneCategory, token)
-    .then((urls) => {
-      state.sceneFetchInFlight = false;
-      if (token !== state.sceneToken) return; // category changed / left Scene
-      if (!urls || !urls.length) {
-        log("Scene: Pexels returned no usable clips; using bundled loops.");
-        beginLocalScene(token);
-        return;
-      }
-      state.sceneSource = "pexels";
-      state.scenePlaylist = shuffleArray(urls);
-      state.scenePlaylistIndex = -1;
-      log(`Scene: loaded ${state.scenePlaylist.length} ${state.sceneCategory} clips from Pexels.`, "success");
-      advanceSceneClip(token);
-    })
-    .catch((error) => {
-      state.sceneFetchInFlight = false;
-      if (token !== state.sceneToken) return;
-      logError("Scene: Pexels fetch failed; using bundled loops", error);
-      beginLocalScene(token);
-    });
-}
-
-// Fallback path: the existing bundled loops become the playlist.
-function beginLocalScene(token) {
-  if (token !== state.sceneToken) return;
-  state.sceneSource = "local";
-  state.scenePlaylist = AMBIENT_VIDEOS.slice();
-  state.scenePlaylistIndex = -1;
-  advanceSceneClip(token);
-}
-
-// Load the next clip into the *inactive* video element, then crossfade. On a load
-// error we skip forward; if every clip in a local playlist fails we drop to the
-// generative drift scene (data-video="off"). For Pexels failures we retry within
-// the same list, and only if the whole list is exhausted do we fall back local.
-function advanceSceneClip(token, attempt = 0) {
-  if (token !== state.sceneToken) return;
-  const screensaver = elements.ambientScreensaver;
-  const playlist = state.scenePlaylist;
-  if (!screensaver || !playlist.length) return;
-
-  // Exhausted the list (all failed this pass) — degrade along the priority chain.
-  if (attempt >= playlist.length) {
-    if (state.sceneSource === "silent") {
-      log("Scene: all silent library clips failed to load; trying Pexels.");
-      beginPexelsScene(token);
-    } else if (state.sceneSource === "pexels") {
-      log("Scene: all Pexels clips failed to load; using bundled loops.");
-      beginLocalScene(token);
-    } else {
-      screensaver.dataset.video = "off";
-      log("Scene: no video source loaded; using generative scene.");
-    }
-    return;
-  }
-
-  state.scenePlaylistIndex = (state.scenePlaylistIndex + 1) % playlist.length;
-  const url = playlist[state.scenePlaylistIndex];
-  const next = inactiveSceneVideo();
-  if (!next) return;
-
-  next.onerror = null;
-  next.oncanplay = null;
-  next.onended = null;
-  next.onloadedmetadata = null;
-
-  silenceVideoEl(next);
-  // audioTracks are only known once metadata loads, so re-disable them then.
-  next.onloadedmetadata = () => {
-    if (token !== state.sceneToken) return;
-    silenceVideoEl(next);
-  };
-
-  next.onerror = () => {
-    if (token !== state.sceneToken) return;
-    next.onerror = null;
-    next.oncanplay = null;
-    log(`Scene clip failed to load: ${url}`);
-    advanceSceneClip(token, attempt + 1);
-  };
-  next.oncanplay = () => {
-    if (token !== state.sceneToken) return;
-    next.onerror = null;
-    next.oncanplay = null;
-    crossfadeToInactive(token);
-    // Perpetual play: advance when this clip finishes. We muted + manual-advance
-    // rather than loop so the next random clip always preloads.
-    next.onended = () => {
-      if (token !== state.sceneToken) return;
-      advanceSceneClip(token);
-    };
-    // TV firmware can steal audio focus when this clip's audio track lands —
-    // re-claim it for the Spotify SDK so music doesn't pause.
-    log(`Scene clip playing (${state.sceneSource}): ${url}`, "success");
-  };
-
-  // Belt-and-suspenders: route this video element's audio through Web Audio
-  // with a 0-gain sink, so even if a track sneaks through (strip fallback path
-  // or unstripped local clip), the firmware sees Web Audio as the sink and not
-  // the native video output. May or may not help on VIDAA, but cheap to try.
-  neutralizeVideoAudioWithWebAudio(next);
-
-  // Path A: strip audio via mp4box + MSE for Pexels clips when the toggle is on.
-  // We only attempt this on remote (Pexels) clips — silent library clips have no
-  // audio track at all and local loops are already audio-free, so both of those
-  // explicitly bypass mp4box/MSE and take the plain <video src> path below.
-  const shouldStrip = state.sceneStripAudio && state.sceneSource === "pexels" && audioStripSupported();
-  if (shouldStrip) {
-    const tokenRef = { cancelled: false };
-    // If the scene token bumps mid-load, mark this strip attempt cancelled.
-    const startedAt = state.sceneToken;
-    const cancelWatcher = window.setInterval(() => {
-      if (state.sceneToken !== startedAt) {
-        tokenRef.cancelled = true;
-        window.clearInterval(cancelWatcher);
-      }
-    }, 400);
-    playSceneClipStripped(next, url, tokenRef)
-      .then(() => { window.clearInterval(cancelWatcher); })
-      .catch((err) => {
-        window.clearInterval(cancelWatcher);
-        if (tokenRef.cancelled) return;
-        const reason = err?.message || String(err);
-        log(`Scene: audio-strip failed (${reason}); falling back to plain URL.`, "warn");
-        // Make it visible on the TV — the user shouldn't need to dig into logs
-        // to know whether the strip is engaged or not.
-        showToast(`Scene strip failed: ${reason}. Falling back.`, "warn");
-        setSceneStripStatus("plain", "strip failed");
-        // Fallback to plain <video src=url> — same conflict as before, but at
-        // least the clip plays. This single-clip fallback is non-destructive.
-        try { next.src = url; next.load(); next.play().catch(() => {}); } catch {}
-      });
-    return;
-  }
-
-  // Path B: plain URL — used for silent library clips (hardware decode, no audio
-  // track to contend over), local loops, and the strip-disabled state.
-  if (state.sceneSource === "silent") {
-    setSceneStripStatus("silent", "no audio track");
+  screensaver.classList.add("is-live");
+  if (!state.sceneSeed || state.sceneBuiltKey !== `${state.sceneCategory}:${state.sceneSeed}`) {
+    buildProceduralScene(false);
   } else {
-    setSceneStripStatus("plain", state.sceneSource === "local" ? "local clip" : "strip off");
-  }
-  next.src = url;
-  next.load();
-  const p = next.play();
-  if (p && typeof p.catch === "function") p.catch(() => {});
-}
-
-// Swap which A/B element is visible. The screensaver wrapper carries data-active
-// = "a" | "b"; CSS fades the matching element in via opacity. Pause the now-hidden
-// element so only one clip decodes at a time on the TV GPU.
-function crossfadeToInactive(token) {
-  if (token !== state.sceneToken) return;
-  const screensaver = elements.ambientScreensaver;
-  if (!screensaver) return;
-  const justLoaded = state.sceneActiveVideo === "b" ? "a" : "b";
-  const previous = activeSceneVideo();
-  state.sceneActiveVideo = justLoaded;
-  screensaver.dataset.active = justLoaded;
-  screensaver.dataset.video = "on";
-  // Pause the outgoing clip after the fade so it stops decoding.
-  if (previous) {
-    window.setTimeout(() => {
-      if (token !== state.sceneToken) return;
-      if (activeSceneVideo() !== previous) {
-        try { previous.pause(); } catch {}
-      }
-    }, 900);
+    setSceneStatus("procedural", SCENE_CATEGORY_LABELS[state.sceneCategory]);
+    startSceneCanvas();
   }
 }
 
-// Skip control: jump to the next clip immediately (no waiting for the current one
-// to end). Reuses advanceSceneClip against the existing in-memory playlist.
+// Skip = "show me another one": re-roll seed + flavor and rebuild.
 function skipSceneClip() {
-  if (state.ambientMode !== "screensaver") return;
-  if (state.sceneUseImageSequence) {
-    // Image-sequence mode: jump straight to another random clip. Never fall into
-    // the <video> path here — it engages the firmware decoder and pauses Spotify.
-    log("Scene: skip to next image-sequence clip.");
-    startImageSequencePlayback();
-    return;
-  }
-  if (!state.scenePlaylist.length) {
-    syncAmbientVideo();
-    return;
-  }
-  log("Scene: skip to next clip.");
-  advanceSceneClip(state.sceneToken);
-}
-
-// Start Scene fresh on the path the user has selected. Critical: in image-sequence
-// mode we must NOT touch the <video> path — engaging the firmware decoder pauses
-// Spotify on this TV. Both start fns bump sceneToken, which cancels any in-flight
-// load/loop for the previous category.
-function restartScene() {
-  if (state.sceneUseImageSequence) {
-    startImageSequencePlayback();
-  } else {
-    startScenePlayback();
-  }
+  if (state.ambientMode !== "screensaver" || state.currentView !== "ambient") return;
+  log("Scene: skip — reseeding the procedural scene.");
+  buildProceduralScene(true);
 }
 
 // Segmented control: pick a category directly. No-op if already active, otherwise
-// persist it, reflect the active segment, and rebuild the playlist.
+// persist it, reflect the active segment, and build fresh scenery for it.
 function selectSceneCategory(event) {
   const category = event?.currentTarget?.dataset?.category || event?.target?.dataset?.category;
   if (!category || !SCENE_CATEGORIES.includes(category)) return;
@@ -5122,8 +4862,7 @@ function selectSceneCategory(event) {
   reflectSceneCategory();
   log(`Scene category set to ${SCENE_CATEGORY_LABELS[state.sceneCategory]}.`);
   if (state.currentView === "ambient" && state.ambientMode === "screensaver") {
-    // Cancel any in-flight load and start fresh for the new category.
-    restartScene();
+    buildProceduralScene(true); // fresh seed — a new category deserves new scenery
   }
 }
 
@@ -5139,101 +4878,6 @@ function reflectSceneCategory() {
     btn.classList.toggle("is-active", isActive);
     btn.setAttribute("aria-pressed", isActive ? "true" : "false");
   }
-}
-
-function shuffleArray(input) {
-  const arr = input.slice();
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-// === Pexels API ===============================================================
-// Search one (random) query for the category and return a flat list of mp4 URLs.
-// Honors 429 with exponential backoff using the Retry-After header. Clips are kept
-// in memory only (callers store them on state); nothing is persisted.
-async function fetchPexelsScene(category, token) {
-  const key = window.__PEXELS_KEY__;
-  if (!key) return [];
-  const queries = SCENE_QUERIES[category] || SCENE_QUERIES.nature;
-  const query = queries[Math.floor(Math.random() * queries.length)];
-  const page = 1 + Math.floor(Math.random() * PEXELS_MAX_PAGE);
-  const url = `${PEXELS_VIDEO_SEARCH}?query=${encodeURIComponent(query)}`
-    + `&orientation=landscape&size=large&per_page=${PEXELS_PER_PAGE}&page=${page}`;
-
-  let attempt = 0;
-  while (attempt <= PEXELS_MAX_RETRIES) {
-    if (token !== state.sceneToken) return [];
-    let response;
-    try {
-      response = await fetch(url, {
-        // Pexels wants the RAW key in Authorization (no "Bearer " prefix).
-        headers: { Authorization: key },
-      });
-    } catch (networkError) {
-      // Network-level failure — let the caller fall back to local loops.
-      throw networkError;
-    }
-
-    if (response.status === 429) {
-      const retryAfter = Number(response.headers.get("Retry-After"));
-      // Exponential backoff: prefer the server hint, else 2^attempt seconds.
-      const waitSec = Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter
-        : Math.pow(2, attempt);
-      log(`Scene: Pexels rate-limited (429); backing off ${waitSec}s.`);
-      attempt += 1;
-      if (attempt > PEXELS_MAX_RETRIES) break;
-      await delay(waitSec * 1000);
-      continue;
-    }
-
-    if (!response.ok) {
-      throw new Error(`Pexels HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    return extractPexelsMp4s(data);
-  }
-  // Ran out of retries on 429.
-  throw new Error("Pexels rate limit retries exhausted");
-}
-
-// From a Pexels search payload, pick one good mp4 per video. Prefer ~1920 then
-// ~1280 wide hd clips; fall back to the widest mp4 available.
-function extractPexelsMp4s(data) {
-  const videos = Array.isArray(data?.videos) ? data.videos : [];
-  const urls = [];
-  for (const video of videos) {
-    const files = Array.isArray(video?.video_files) ? video.video_files : [];
-    const mp4s = files.filter((f) => f && f.file_type === "video/mp4" && f.link);
-    if (!mp4s.length) continue;
-    const pick = pickPreferredMp4(mp4s);
-    if (pick) urls.push(pick.link);
-  }
-  return urls;
-}
-
-function pickPreferredMp4(mp4s) {
-  // Score by closeness to 1920, then 1280; prefer "hd" quality; tie-break wider.
-  const scored = mp4s.map((f) => {
-    const width = Number(f.width) || 0;
-    let score;
-    if (width >= 1800 && width <= 2100) score = 0;        // ~full HD landscape
-    else if (width >= 1200 && width <= 1400) score = 1;   // ~HD landscape
-    else if (width > 2100) score = 2;                      // 4K — heavy on the TV
-    else score = 3;                                        // small/odd
-    if (f.quality === "hd") score -= 0.25;
-    return { file: f, score, width };
-  });
-  scored.sort((a, b) => (a.score - b.score) || (b.width - a.width));
-  return scored[0]?.file || null;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 // Measure the canvas once (and on resize) and resize the backing store to match,
@@ -5307,63 +4951,201 @@ function stopVisualizer() {
   state.visualizerRect = null;
 }
 
+// Pre-rendered visualizer assets, rebuilt only when the palette or canvas size
+// changes — the per-frame loop never builds gradients or sprites. Glow comes
+// from a radial-gradient sprite (canvas shadowBlur is unusably slow on the TV).
+const VIZ_BARS = 56;
+const _viz = {
+  key: "",
+  glow: null, // offscreen radial glow sprite, drawImage'd behind the art
+  barGradient: null, // radial stroke gradient in the translated (center) space
+  dust: null, // few dozen ambient motes, seeded once per session
+  bars: new Float32Array(VIZ_BARS), // eased per-bar amplitudes (lerp, no jumps)
+  peaks: new Float32Array(VIZ_BARS), // peak-cap lengths with slow falloff
+  energy: 0.5, // eased 0..1 — relaxes when paused instead of snapping
+};
+
+function colorWithAlpha(color, alpha) {
+  const c = parseRgbColor(color);
+  return c ? rgbCss(c, alpha) : color;
+}
+
+function ensureVizAssets(ctx, w, h, accentA, accentB) {
+  const key = `${w}x${h}|${accentA}|${accentB}`;
+  if (_viz.key === key) return;
+  _viz.key = key;
+  const minDim = Math.min(w, h);
+  const glowSize = Math.round(minDim * 0.95);
+  const glow = document.createElement("canvas");
+  glow.width = glowSize;
+  glow.height = glowSize;
+  const gctx = glow.getContext("2d");
+  if (gctx) {
+    const half = glowSize / 2;
+    const grad = gctx.createRadialGradient(half, half, minDim * 0.12, half, half, half);
+    grad.addColorStop(0, colorWithAlpha(accentA, 0.32));
+    grad.addColorStop(0.55, colorWithAlpha(accentB, 0.12));
+    grad.addColorStop(1, colorWithAlpha(accentB, 0));
+    gctx.fillStyle = grad;
+    gctx.fillRect(0, 0, glowSize, glowSize);
+  }
+  _viz.glow = glow;
+  const innerR = minDim * 0.3;
+  const bar = ctx.createRadialGradient(0, 0, innerR, 0, 0, innerR + minDim * 0.24);
+  bar.addColorStop(0, accentA);
+  bar.addColorStop(1, accentB);
+  _viz.barGradient = bar;
+  if (!_viz.dust) {
+    const dust = [];
+    for (let i = 0; i < 36; i += 1) {
+      dust.push({
+        u: Math.random(),
+        v: Math.random(),
+        r: Math.random() < 0.8 ? 1.5 : 2.5,
+        speed: 0.005 + Math.random() * 0.012,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+    _viz.dust = dust;
+  }
+}
+
+// No FFT (DRM blocks audio taps) — derive a stable per-track tempo guess from
+// the track id so each song at least *feels* different. Layered half/double-time
+// bands below keep the pulse from being metronomic.
+function vizBpmGuess(now) {
+  const id = now?.id || now?.title || "";
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return 84 + (Math.abs(hash) % 48); // 84–131 bpm
+}
+
 function drawVisualizerFrame(ctx, w, h, phase, palette) {
-  const accentA = (palette && palette[0]) || "#1ed760";
-  const accentB = (palette && palette[1]) || "#70a6ff";
+  const accentA = (palette && palette[0]) || "rgb(30, 215, 96)";
+  const accentB = (palette && palette[1]) || "rgb(112, 166, 255)";
   const accentC = (palette && palette[2]) || accentA;
+  ensureVizAssets(ctx, w, h, accentA, accentB);
   ctx.clearRect(0, 0, w, h);
 
   const now = state.nowPlaying;
   const positionMs = now ? (now.paused ? now.position : now.position + (Date.now() - now.updatedAt)) : 0;
   const playing = Boolean(now && !now.paused);
-  const energy = playing ? 1 : 0.42;
-  // Pseudo-beat locked to the playback timeline (~120bpm) so the motion tracks
-  // the song rather than free-running. Not a real FFT — DRM audio can't be tapped.
-  const beatPhase = (positionMs / 1000) * (120 / 60) * Math.PI * 2;
-  const pulse = (Math.sin(beatPhase) * 0.5 + 0.5) * energy;
+  // Energy eases instead of snapping so pause/resume breathes down/up.
+  _viz.energy += ((playing ? 1 : 0.3) - _viz.energy) * 0.04;
+  const energy = _viz.energy;
+
+  // Layered pseudo-beat locked to the playback timeline: a per-track tempo
+  // guess plus half- and double-time sine bands. Not a real FFT — DRM audio
+  // can't be tapped — but it stops the pulse feeling metronomic.
+  const beatHz = vizBpmGuess(now) / 60;
+  const beat1 = (positionMs / 1000) * beatHz * Math.PI * 2;
+  const pulseRaw =
+    Math.sin(beat1) * 0.55 +
+    Math.sin(beat1 * 0.5 + 1.3) * 0.3 +
+    Math.sin(beat1 * 2 + 0.7) * 0.15;
+  const pulse = (pulseRaw * 0.5 + 0.5) * energy;
 
   const cx = w / 2;
   const cy = h / 2;
   const minDim = Math.min(w, h);
-  const innerR = minDim * 0.30 * (1 + pulse * 0.035);
-  // TV-optimized: no shadowBlur, no "lighter" compositing, fewer bars. Those were
-  // the per-frame killers on the VIDAA GPU. The circular look is preserved via the
-  // radial bars + breathing ring, just rendered cheaply.
-  const bars = 56;
+  const innerR = minDim * 0.30 * (1 + pulse * 0.03);
+  // TV-optimized: no shadowBlur, no "lighter" compositing. Glow is a single
+  // pre-rendered sprite blit; everything else is thin alpha strokes.
+
+  // Faint dust motes drifting upward, furthest back.
+  ctx.fillStyle = accentB;
+  for (const mote of _viz.dust) {
+    mote.v -= mote.speed * 0.016;
+    if (mote.v < -0.02) {
+      mote.v = 1.02;
+      mote.u = Math.random();
+    }
+    const flicker = 0.5 + 0.5 * Math.sin(phase * mote.speed * 30 + mote.phase);
+    ctx.globalAlpha = 0.05 + 0.09 * flicker * energy;
+    ctx.fillRect(mote.u * w, mote.v * h, mote.r, mote.r);
+  }
+  ctx.globalAlpha = 1;
+
+  // Palette glow behind the art, breathing with the beat.
+  if (_viz.glow) {
+    ctx.globalAlpha = 0.5 + pulse * 0.35;
+    ctx.drawImage(_viz.glow, cx - _viz.glow.width / 2, cy - _viz.glow.height / 2);
+    ctx.globalAlpha = 1;
+  }
 
   ctx.save();
   ctx.translate(cx, cy);
+  ctx.rotate(phase * 0.01); // slow whole-ring drift
   ctx.lineCap = "round";
-  for (let i = 0; i < bars; i++) {
-    const t = i / bars;
+  const barW = Math.max(2, (minDim / VIZ_BARS) * 0.5);
+  for (let i = 0; i < VIZ_BARS; i++) {
+    const t = i / VIZ_BARS;
     const angle = t * Math.PI * 2 - Math.PI / 2;
     const wobble =
       Math.sin(phase * 0.7 + i * 0.35) * 0.5 +
       Math.sin(phase * 0.33 + i * 0.11) * 0.3 +
-      Math.sin(beatPhase + i * 0.5) * 0.4;
-    const amp = (0.32 + (wobble * 0.5 + 0.5) * 0.68) * energy;
+      Math.sin(beat1 + i * 0.5) * 0.4;
+    const target = (0.30 + (wobble * 0.5 + 0.5) * 0.7) * energy;
+    // Smooth amplitude easing — bars glide toward their targets, never jump.
+    _viz.bars[i] += (target - _viz.bars[i]) * 0.25;
+    const amp = _viz.bars[i];
     const len = amp * minDim * 0.16 + 6;
-    const x1 = Math.cos(angle) * innerR;
-    const y1 = Math.sin(angle) * innerR;
-    const x2 = Math.cos(angle) * (innerR + len);
-    const y2 = Math.sin(angle) * (innerR + len);
-    const color = (Math.sin(t * Math.PI * 2 + phase * 0.2) * 0.5 + 0.5) < 0.5 ? accentA : accentB;
-    ctx.strokeStyle = color;
-    ctx.globalAlpha = 0.4 + amp * 0.5;
-    ctx.lineWidth = Math.max(2, (minDim / bars) * 0.5);
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    // Outer bar: palette gradient stroke (precomputed, radial A→B).
+    ctx.strokeStyle = _viz.barGradient;
+    ctx.globalAlpha = 0.38 + amp * 0.5;
+    ctx.lineWidth = barW;
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
+    ctx.moveTo(cosA * innerR, sinA * innerR);
+    ctx.lineTo(cosA * (innerR + len), sinA * (innerR + len));
+    ctx.stroke();
+    // Peak cap: holds the recent maximum and falls away slowly.
+    _viz.peaks[i] = Math.max(len, _viz.peaks[i] - minDim * 0.0014);
+    const peakR = innerR + _viz.peaks[i] + 5;
+    ctx.globalAlpha = 0.28 + amp * 0.3;
+    ctx.lineWidth = Math.max(2, barW * 0.6);
+    ctx.beginPath();
+    ctx.moveTo(cosA * peakR, sinA * peakR);
+    ctx.lineTo(cosA * (peakR + 3), sinA * (peakR + 3));
+    ctx.stroke();
+    // Mirrored inner ring: shorter bars pointing inward, cooler color.
+    const innerLen = len * 0.4;
+    ctx.strokeStyle = accentB;
+    ctx.globalAlpha = 0.18 + amp * 0.25;
+    ctx.lineWidth = Math.max(2, barW * 0.55);
+    ctx.beginPath();
+    ctx.moveTo(cosA * (innerR * 0.86), sinA * (innerR * 0.86));
+    ctx.lineTo(cosA * (innerR * 0.86 - innerLen), sinA * (innerR * 0.86 - innerLen));
     ctx.stroke();
   }
   // Soft breathing ring just outside the album art.
-  ctx.globalAlpha = 0.16 + pulse * 0.16;
+  ctx.globalAlpha = 0.14 + pulse * 0.18;
   ctx.lineWidth = minDim * 0.012;
   ctx.strokeStyle = accentC;
   ctx.beginPath();
   ctx.arc(0, 0, innerR * 0.92, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+
+  // Track-progress arc (drawn unrotated): a faint full ring plus a brighter arc
+  // up to the current position, so the visualizer doubles as a glanceable timer.
+  if (now && now.duration) {
+    const progress = Math.max(0, Math.min(1, positionMs / now.duration));
+    const arcR = innerR + minDim * 0.215;
+    ctx.lineCap = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = accentC;
+    ctx.globalAlpha = 0.1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcR, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.42;
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcR, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 }
 
 function formatDuration(ms) {

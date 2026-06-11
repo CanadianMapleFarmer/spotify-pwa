@@ -1120,45 +1120,132 @@ body[data-view="ambient"] .app {
     #04060b;
 }
 
-.drift {
+/* === Procedural Scene layers ===
+   Sky and silhouettes are static paints; every moving part is transform/opacity
+   only: very slow translate3d parallax on the layer wrappers, opacity twinkle/
+   blink on SVG window/antenna nodes, plus the 30fps particle canvases driven
+   from app.js. Animations only run while .is-live, so a hidden Scene costs the
+   compositor nothing. */
+.ambient-scene__sky {
   position: absolute;
-  width: 60vw;
-  height: 60vw;
-  max-width: 980px;
-  max-height: 980px;
-  background-image: var(--ambient-art-url);
-  background-size: cover;
-  background-position: center;
-  border-radius: 18px;
-  opacity: 0.18;
+  inset: 0;
+}
+
+.ambient-scene__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Layer wrappers are wider than the viewport so the drift never shows an edge.
+   Heights size the silhouette viewBox; depth is conveyed by haze color. */
+.ambient-scene__layer {
+  position: absolute;
+  bottom: 0;
+  left: -4%;
+  width: 108%;
   will-change: transform;
 }
 
-.drift--a {
-  top: -14vw;
-  left: -12vw;
-  animation: drift-a 220s ease-in-out infinite alternate;
-}
-.drift--b {
-  bottom: -16vw;
-  right: -10vw;
-  width: 52vw;
-  height: 52vw;
-  opacity: 0.14;
-  animation: drift-b 260s ease-in-out infinite alternate;
+.ambient-scene__layer svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-@keyframes drift-a { 0%{transform:translate3d(0,0,0)} 100%{transform:translate3d(14vw,8vw,0)} }
-@keyframes drift-b { 0%{transform:translate3d(0,0,0)} 100%{transform:translate3d(-12vw,-10vw,0)} }
+.ambient-scene__layer--far { height: 60%; }
+.ambient-scene__layer--mid { height: 44%; }
+.ambient-scene__layer--near { height: 33%; }
 
-.ambient-stage[data-mode="screensaver"]:not(.has-artwork) .drift {
-  background-image: none;
-  /* Fallback first (see .ambient-room note). */
-  background: linear-gradient(135deg, rgba(30, 215, 96, 0.5), rgba(112, 166, 255, 0.5));
-  background: linear-gradient(135deg,
-    color-mix(in oklab, var(--ambient-accent-a) 50%, transparent),
-    color-mix(in oklab, var(--ambient-accent-b) 50%, transparent));
+.ambient-screensaver.is-live .ambient-scene__layer--far {
+  animation: scene-drift-far 420s ease-in-out infinite alternate;
 }
+.ambient-screensaver.is-live .ambient-scene__layer--mid {
+  animation: scene-drift-mid 300s ease-in-out infinite alternate;
+}
+.ambient-screensaver.is-live .ambient-scene__layer--near {
+  animation: scene-drift-near 210s ease-in-out infinite alternate;
+}
+
+@keyframes scene-drift-far { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-1.2%, 0, 0); } }
+@keyframes scene-drift-mid { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-2.2%, 0, 0); } }
+@keyframes scene-drift-near { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-3.4%, 0, 0); } }
+
+/* Car-streak band: sits between the mid and near layers (DOM order) so streaks
+   pass behind the foreground buildings. Skyline scenes only. */
+.ambient-scene__fg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12%;
+  height: 14%;
+  display: block;
+}
+
+.ambient-screensaver[data-category="nature"] .ambient-scene__fg {
+  display: none;
+}
+
+/* Low haze band over the nature treeline; the tint comes from app.js. */
+.ambient-scene__mist {
+  position: absolute;
+  left: -6%;
+  width: 112%;
+  bottom: 16%;
+  height: 22%;
+  opacity: 0.55;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.ambient-screensaver[data-category="skyline"] .ambient-scene__mist {
+  display: none;
+}
+
+.ambient-screensaver.is-live .ambient-scene__mist {
+  animation: scene-mist 240s ease-in-out infinite alternate;
+}
+
+@keyframes scene-mist { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(4%, 0, 0); } }
+
+/* Legibility scrim: darken the top/bottom edges so the scene-np card and the
+   control cluster always read against the scenery. */
+.ambient-scene__scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(4, 6, 11, 0.35) 0%, transparent 26%, transparent 62%, rgba(4, 6, 11, 0.55) 100%);
+}
+
+/* Window twinkle / antenna blink on SVG nodes — opacity-only keyframes with
+   per-node randomized delay/duration set inline at build time. */
+.scene-twinkle {
+  animation: scene-twinkle 8s ease-in-out infinite;
+  animation-play-state: paused;
+}
+
+.scene-blink {
+  animation: scene-blink 2.6s steps(1, end) infinite;
+  animation-play-state: paused;
+}
+
+.ambient-screensaver.is-live .scene-twinkle,
+.ambient-screensaver.is-live .scene-blink {
+  animation-play-state: running;
+}
+
+@keyframes scene-twinkle {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.95; }
+}
+
+@keyframes scene-blink {
+  0%, 100% { opacity: 0.9; }
+  55% { opacity: 0.1; }
+}
+
 
 /* === Scene now-playing card ===
    A real mini player floating top-right of the Scene view: art + title/artist,
@@ -1272,22 +1359,26 @@ body[data-view="ambient"] .app {
   text-transform: uppercase;
 }
 
-/* The audio-strip badge is a diagnostic — only show it in Debug View. */
+/* The renderer badge is a diagnostic — only show it in Debug View. */
 body.debug-on .scene-np__status {
   display: inline-flex;
 }
 
-.scene-np__status[data-state="idle"]   { background: rgba(255,255,255,0.08); color: rgba(232,236,241,0.85); }
-.scene-np__status[data-state="silent"] { background: rgba(30,215,96,0.18);   color: #6fe49a; }
-.scene-np__status[data-state="strip"]  { background: rgba(30,215,96,0.18);   color: #6fe49a; }
-.scene-np__status[data-state="plain"]  { background: rgba(255,200,60,0.18);  color: #ffd97a; }
-.scene-np__status[data-state="error"]  { background: rgba(255,80,80,0.18);   color: #ff9a9a; }
+.scene-np__status[data-state="idle"]       { background: rgba(255,255,255,0.08); color: rgba(232,236,241,0.85); }
+.scene-np__status[data-state="procedural"] { background: rgba(30,215,96,0.18);   color: #6fe49a; }
+.scene-np__status[data-state="error"]      { background: rgba(255,80,80,0.18);   color: #ff9a9a; }
 
 
 /* === Visualizer mode === */
 .ambient-visualizer {
+  /* Very dark palette wash behind the canvas: JS writes --viz-rgb channels from
+     the album art (same pattern as --np-rgb); the rgba() literal is the safe
+     fallback where the var hasn't been set yet. */
   background:
     radial-gradient(circle at 50% 50%, rgba(20, 28, 44, 0.5), transparent 60%),
+    linear-gradient(180deg, #04060b, #06090f);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(var(--viz-rgb, 20, 28, 44), 0.16), transparent 60%),
     linear-gradient(180deg, #04060b, #06090f);
 }
 
@@ -1999,10 +2090,6 @@ body.has-pill .app {
   overflow-wrap: anywhere;
 }
 
-.diagnostics__col dd.imgseq-err {
-  color: #ff8a8a;
-}
-
 .diagnostics__col output {
   display: block;
   padding: 10px;
@@ -2496,67 +2583,6 @@ body.is-phone-pair {
 .ambient-controls__transport .transport-btn--primary svg {
   width: 28px;
   height: 28px;
-}
-
-/* === Screensaver video scenery === */
-/* A/B crossfade: both clips are stacked; the one matching data-active fades in.
-   We animate opacity only (TV-safe) so the swap is seamless. */
-.ambient-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  opacity: 0;
-  transition: opacity 800ms ease;
-}
-
-.ambient-screensaver[data-video="on"][data-active="a"] .ambient-video:not(.ambient-video--b),
-.ambient-screensaver[data-video="on"][data-active="b"] .ambient-video--b {
-  opacity: 1;
-}
-
-/* Image-sequence renderer (only shown when data-video="imgseq"). It overlays the
-   video elements; data-mode swap keeps just one path visible at a time. */
-.ambient-imgseq {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  opacity: 0;
-  transition: opacity 600ms ease;
-}
-
-.ambient-screensaver[data-video="imgseq"] .ambient-imgseq {
-  opacity: 1;
-}
-
-/* Hide the <video> elements completely when image-sequence is the active
-   renderer so they never engage the firmware's video pipeline. */
-.ambient-screensaver[data-video="imgseq"] .ambient-video {
-  display: none;
-}
-
-.ambient-video__scrim {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 800ms ease;
-  background: linear-gradient(180deg, rgba(4, 6, 11, 0.4) 0%, transparent 28%, transparent 58%, rgba(4, 6, 11, 0.72) 100%);
-}
-
-.ambient-screensaver[data-video="on"] .ambient-video__scrim {
-  opacity: 1;
-}
-
-/* When real scenery is playing, retire the generative drift fallback. */
-.ambient-screensaver[data-video="on"] .drift {
-  opacity: 0;
-  transition: opacity 800ms ease;
-  /* Faded out — stop animating transform so the layers cost the compositor nothing. */
-  animation-play-state: paused;
 }
 
 /* === Cinematic full-screen Now Playing === */
@@ -3710,7 +3736,10 @@ body.has-pill .up-next {
 /* === prefers-reduced-motion guard === */
 @media (prefers-reduced-motion: reduce) {
   .aurora,
-  .drift,
+  .ambient-scene__layer,
+  .ambient-scene__mist,
+  .scene-twinkle,
+  .scene-blink,
   .ambient-room__art,
   .ambient-visualizer__art,
   .ambient-visualizer__art::after,

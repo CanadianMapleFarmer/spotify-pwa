@@ -40,12 +40,10 @@ jobs:
           test -f firebase.json
           test -f .firebaserc
           test -f firestore.rules
-          test -f pexels-config.js
           # app.js ships as <script type="module">; check it in module mode so
           # module-only errors (e.g. duplicate top-level lexical declarations) are
           # caught here instead of silently shipping a non-executing bundle.
           node --check --input-type=module < app.js
-          node --check pexels-config.js
           echo "Payload OK"
 
       - name: Setup Node
@@ -68,14 +66,6 @@ jobs:
           else
             echo "::warning::Firestore rules deploy failed — usually means Firestore isn't enabled yet on the project. Enable it in the Firebase Console (Build → Firestore Database → Create database), then re-run this workflow."
           fi
-
-      - name: Inject Pexels key
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-        env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        run: |
-          printf 'window.__PEXELS_KEY__ = "%s";\n' "$PEXELS_API_KEY" > pexels-config.js
-          echo "Pexels config written"
 
       - name: Deploy live (push to main)
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'

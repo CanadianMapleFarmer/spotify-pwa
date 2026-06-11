@@ -330,17 +330,20 @@
             <span class="ambient-room__scrim"></span>
           </div>
 
-          <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-video="off">
-            <video class="ambient-video" id="ambientVideo" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
-            <video class="ambient-video ambient-video--b" id="ambientVideoB" muted playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
-            <!-- Image-sequence renderer: when the toggle is on, the Cloud
-                 Function returns a list of JPG frame URLs and we animate this
-                 <img> by swapping src. No <video> decoder engages, so the TV's
-                 firmware doesn't pause Spotify. Hidden via data-mode until in use. -->
-            <img class="ambient-imgseq" id="ambientImgSeq" alt="" aria-hidden="true">
-            <span class="ambient-video__scrim" aria-hidden="true"></span>
-            <span class="drift drift--a" id="ambientDriftA"></span>
-            <span class="drift drift--b" id="ambientDriftB"></span>
+          <div class="ambient-screensaver" id="ambientScreensaver" aria-hidden="true" data-category="nature">
+            <!-- Procedural Scene: Roku-City-style layered illustration, generated
+                 per seed in app.js. No <video> ever plays here — the TV firmware
+                 pauses Spotify when a video engages the decoder. Back to front:
+                 sky gradient, particle canvas (stars/clouds), far/mid silhouettes,
+                 car-streak band canvas (skyline), near silhouette, mist, scrim. -->
+            <div class="ambient-scene__sky" id="sceneSky"></div>
+            <canvas class="ambient-scene__canvas" id="sceneCanvas" aria-hidden="true"></canvas>
+            <div class="ambient-scene__layer ambient-scene__layer--far" id="sceneLayerFar"></div>
+            <div class="ambient-scene__layer ambient-scene__layer--mid" id="sceneLayerMid"></div>
+            <canvas class="ambient-scene__fg" id="sceneFgCanvas" aria-hidden="true"></canvas>
+            <div class="ambient-scene__layer ambient-scene__layer--near" id="sceneLayerNear"></div>
+            <div class="ambient-scene__mist" id="sceneMist"></div>
+            <span class="ambient-scene__scrim" aria-hidden="true"></span>
             <!-- Scene now-playing card: art + meta + progress. Info-only — transport
                  lives on the ambient screen so we don't duplicate controls. -->
             <aside class="scene-np" id="sceneNp" aria-label="Now playing">
@@ -357,8 +360,8 @@
                 <span class="scene-np__track"><span class="scene-np__fill" id="sceneNpProgressFill"></span></span>
                 <span class="scene-np__time" id="sceneNpTime">0:00 / 0:00</span>
               </div>
-              <!-- Visible status badge so the user can tell, on the TV, whether the
-                   audio-strip path is actually running or whether we fell back. -->
+              <!-- Debug-only status badge: which Scene renderer is live (procedural
+                   scene + category) so TV diagnostics show what's on screen. -->
               <p class="scene-np__status" id="sceneNpStatus" data-state="idle">Scene: idle</p>
             </aside>
           </div>
@@ -493,17 +496,8 @@
 
         <div class="settings-section">
           <p class="eyebrow">Ambient</p>
-          <h3 class="settings-section__title">Scene playback</h3>
-          <button class="focusable settings-toggle" id="toggleSceneImgSeq" data-action="toggleSceneImageSequence" role="switch" aria-checked="false">
-            <span class="settings-toggle__label">Force image-sequence Scene mode (debug)</span>
-            <span class="settings-toggle__hint">Scene now plays silent MP4s from the curated library by default — no audio track means the TV firmware never pauses Spotify, and the hardware decoder does the work. Turn this on only to force the legacy JPG-sequence renderer (slow on the TV) for debugging.</span>
-            <span class="settings-toggle__state" id="toggleSceneImgSeqState">Off</span>
-          </button>
-          <button class="focusable settings-toggle" id="toggleSceneStrip" data-action="toggleSceneStripAudio" role="switch" aria-checked="true">
-            <span class="settings-toggle__label">Strip audio from MP4 (experimental, fallback)</span>
-            <span class="settings-toggle__hint">Only affects the Pexels-direct fallback (used when the silent-clip library is empty): demux MP4s in-browser so the video element never gets an audio track. Silent library clips have no audio track to begin with and skip this entirely.</span>
-            <span class="settings-toggle__state" id="toggleSceneStripState">On</span>
-          </button>
+          <h3 class="settings-section__title">Scene</h3>
+          <p class="settings-section__lede">Scene draws its living landscapes and skylines right on the TV — no video, no network — so Spotify playback is never interrupted. Use the Nature/City buttons in Ambient to pick the scenery and Skip to generate a new variation.</p>
         </div>
 
         <div class="settings-section">
@@ -534,10 +528,6 @@
           <div class="diagnostics__col">
             <p class="eyebrow">Last remote key</p>
             <output id="keyReadout">Waiting for key event</output>
-          </div>
-          <div class="diagnostics__col">
-            <p class="eyebrow">Scene imgseq</p>
-            <dl id="imgseqFacts"></dl>
           </div>
         </div>
         <p class="log__hint">Focus this list and use ↑↓ to scroll.</p>
@@ -647,11 +637,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
-    <script src="/pexels-config.js?v=1"></script>
-    <!-- mp4box.js: demuxes MP4s in-browser so we can feed only the video track
-         to MediaSource and skip the audio decoder entirely. Used to strip audio
-         from Pexels scene clips so they coexist with Spotify on the TV. -->
-    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
     <script src="/app.js?v=48" type="module"></script>
   </body>
 </html>
