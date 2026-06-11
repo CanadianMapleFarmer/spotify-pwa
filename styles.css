@@ -1120,8 +1120,7 @@ body[data-view="ambient"] .app {
   background-size: cover;
   background-position: center;
   border-radius: 18px;
-  filter: blur(40px) saturate(1.3);
-  opacity: 0.32;
+  opacity: 0.18;
   will-change: transform;
 }
 
@@ -1135,30 +1134,12 @@ body[data-view="ambient"] .app {
   right: -10vw;
   width: 52vw;
   height: 52vw;
-  opacity: 0.22;
-  animation: drift-b 260s ease-in-out infinite alternate;
-}
-.drift--c {
-  top: 30%;
-  left: 40%;
-  width: 38vw;
-  height: 38vw;
-  opacity: 0.18;
-  animation: drift-c 300s ease-in-out infinite alternate;
-}
-.drift--d {
-  bottom: 20%;
-  left: -8vw;
-  width: 42vw;
-  height: 42vw;
   opacity: 0.14;
-  animation: drift-d 340s ease-in-out infinite alternate;
+  animation: drift-b 260s ease-in-out infinite alternate;
 }
 
 @keyframes drift-a { 0%{transform:translate3d(0,0,0)} 100%{transform:translate3d(14vw,8vw,0)} }
 @keyframes drift-b { 0%{transform:translate3d(0,0,0)} 100%{transform:translate3d(-12vw,-10vw,0)} }
-@keyframes drift-c { 0%{transform:translate3d(0,0,0) scale(1)} 100%{transform:translate3d(-8vw,6vw,0) scale(1.1)} }
-@keyframes drift-d { 0%{transform:translate3d(0,0,0) scale(0.95)} 100%{transform:translate3d(10vw,-6vw,0) scale(1.08)} }
 
 .ambient-stage[data-mode="screensaver"]:not(.has-artwork) .drift {
   background-image: none;
@@ -2561,15 +2542,6 @@ body.is-phone-pair {
   animation-play-state: paused;
 }
 
-/* And drop the two extra layers outright while a clip plays: 2 blurred drift
-   layers is all the fade-out needs, and the freed compositor bandwidth goes to
-   the video. All four stay live only in the generative fallback
-   (data-video="off") where they ARE the content. */
-.ambient-screensaver[data-video="on"] .drift--c,
-.ambient-screensaver[data-video="on"] .drift--d {
-  display: none;
-}
-
 /* === Cinematic full-screen Now Playing === */
 .view-now {
   /* Palette fallback (muted slate); JS sets --np-rgb from the album art via
@@ -2600,11 +2572,8 @@ body.is-phone-pair {
   z-index: 0;
   background-size: cover;
   background-position: center;
-  /* Heavy blur + scale smears the art into a smooth colour wash instead of the
-     chunky, over-saturated blobs a light blur leaves on a large surface. The big
-     scale/inset keeps the blurred edges off-screen. */
-  transform: scale(1.32);
-  filter: blur(64px) saturate(0.92) brightness(0.5);
+  transform: scale(1.08);
+  opacity: 0.22;
 }
 
 .now-backdrop::after {

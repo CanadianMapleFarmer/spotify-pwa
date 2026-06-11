@@ -264,8 +264,6 @@ const elements = {
   sceneNpStatus: document.querySelector("#sceneNpStatus"),
   ambientDriftA: document.querySelector("#ambientDriftA"),
   ambientDriftB: document.querySelector("#ambientDriftB"),
-  ambientDriftC: document.querySelector("#ambientDriftC"),
-  ambientDriftD: document.querySelector("#ambientDriftD"),
   ambientVisualizerCanvas: document.querySelector("#ambientVisualizerCanvas"),
   ambientVisualizerArt: document.querySelector("#ambientVisualizerArt"),
   ambientScreensaver: document.querySelector("#ambientScreensaver"),
