@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=44">
+    <link rel="stylesheet" href="/styles.css?v=45">
     <meta http-equiv="Cache-Control" content="no-store">
     <script>
       // Bootstraps the service worker independently of app.js. If the module
@@ -531,7 +531,7 @@
           </div>
         </div>
         <p class="log__hint">Focus this list and use ↑↓ to scroll.</p>
-        <ol class="focusable log" id="log" tabindex="0" aria-live="polite" aria-label="Diagnostics log — arrow keys scroll"></ol>
+        <ol class="focusable log" id="log" role="log" tabindex="0" aria-live="polite" aria-label="Diagnostics log — arrow keys scroll"></ol>
       </section>
     </main>
 
@@ -637,6 +637,6 @@
     <script defer src="/__/firebase/10.13.2/firebase-app-compat.js"></script>
     <script defer src="/__/firebase/10.13.2/firebase-firestore-compat.js"></script>
     <script defer src="/__/firebase/init.js"></script>
-    <script src="/app.js?v=48" type="module"></script>
+    <script src="/app.js?v=49" type="module"></script>
   </body>
 </html>

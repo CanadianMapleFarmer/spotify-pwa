@@ -1,11 +1,13 @@
-const CACHE_NAME = "spotify-tv-v43";
+const CACHE_NAME = "spotify-tv-v44";
 const ASSETS = [
   "/",
   "/index.html",
-  "/styles.css?v=44",
-  "/app.js?v=48",
+  "/styles.css?v=45",
+  "/app.js?v=49",
   "/manifest.webmanifest",
   "/public/icons/spotify-logo.png",
+  "/public/icons/icon-192.png",
+  "/public/icons/icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {

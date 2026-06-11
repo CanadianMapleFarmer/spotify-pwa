@@ -115,6 +115,8 @@ const state = {
   trackMenuReturnFocus: null,
   userPlaylists: null, // cached editable playlists for the add-to-playlist picker
   upNextTrackId: "", // nowPlaying id the up-next card was last shown for (once per song)
+  knownDevices: [], // last /me/player/devices payload — resolves transfer-toast names
+  spotifyDeviceOffline: false, // SDK fired not_ready — status strip shows "offline"
 };
 
 const elements = {
@@ -1298,13 +1300,16 @@ async function loadLibrary() {
 async function loadDevices() {
   requireAccessToken();
   const data = await spotifyApiJson("/v1/me/player/devices");
+  state.knownDevices = data.devices || []; // transfer toasts resolve names from here
   elements.devicesGrid.replaceChildren();
   for (const device of data.devices || []) {
     const button = document.createElement("button");
     button.className = "focusable device-card";
     button.dataset.deviceId = device.id || "";
     button.innerHTML = `<strong>${escapeHtml(device.name)}</strong><span>${escapeHtml(device.type)}${device.is_active ? " - active" : ""}</span>`;
-    button.addEventListener("click", () => transferToDevice(device.id));
+    button.addEventListener("click", () => {
+      transferToDevice(device.id).catch((error) => logError("Device transfer failed", error));
+    });
     elements.devicesGrid.append(button);
   }
   if (!elements.devicesGrid.children.length) {
@@ -1451,7 +1456,7 @@ async function playItem(item, type) {
 // the DOM in chunks as focus approaches the end of what's rendered.
 const COLLECTION_MAX_TRACKS = 500;
 const COLLECTION_RENDER_CHUNK = 60;
-const COLLECTION_RENDER_LOOKAHEAD = 15; // rows of headroom before extending
+const COLLECTION_RENDER_LOOKAHEAD = 25; // rows of headroom before extending (covers accelerated key-repeat)
 
 async function openCollection(item, type) {
   requireAccessToken();
@@ -1589,7 +1594,7 @@ function renderCollection() {
     coll.paletteUrl = coll.image;
     extractPalette(coll.image).then((palette) => {
       if (state.collection !== coll) return;
-      applyPaletteChannels(elements.viewCollection, "--coll-rgb", palette);
+      applyPaletteChannels(elements.viewCollection, "--coll-rgb", palette, { scrimBoost: true });
     }).catch(() => {});
   }
   if (elements.collectionArt) {
@@ -1605,6 +1610,7 @@ function renderCollection() {
   renderCollectionSaveBtn();
 
   const list = elements.collectionTracks;
+  const focusIdx = captureListFocusIndex(list); // #14: full re-render may vaporize the focused row
   list.replaceChildren();
   coll.renderedCount = 0;
   invalidateFocusables();
@@ -1614,24 +1620,25 @@ function renderCollection() {
     note.className = "collection-note";
     note.textContent = "Loading tracks…";
     list.append(note);
-    return;
-  }
-  if (coll.error) {
+  } else if (coll.error) {
     const note = document.createElement("p");
     note.className = "collection-note collection-note--error";
     note.textContent = coll.error;
     list.append(note);
-    return;
-  }
-  if (!coll.tracks.length) {
+  } else if (!coll.tracks.length) {
     const note = document.createElement("p");
     note.className = "collection-note";
     note.textContent = "No tracks here.";
     list.append(note);
-    return;
+  } else {
+    renderMoreCollectionRows();
   }
 
-  renderMoreCollectionRows();
+  restoreListFocusIndex(list, focusIdx);
+  // List collapsed to a non-focusable note — fall back to the header controls.
+  if (focusIdx >= 0 && document.activeElement === document.body && elements.collectionShuffleBtn) {
+    focusElement(elements.collectionShuffleBtn);
+  }
 }
 
 // Header line: byline · year · count · duration. While pages stream in the
@@ -1883,6 +1890,9 @@ async function startCollectionPlayback({ offsetUri } = {}) {
   // track 1.
   try {
     await setShuffleState(state.collectionShuffle);
+    // #21: shuffled starts are otherwise indistinguishable from a mis-tap that
+    // landed on the wrong song — say so.
+    if (state.collectionShuffle) showToast("Playing — shuffle on", "success");
     if (state.collectionShuffle && !offsetUri) {
       await spotifyApiFetch(withDeviceIdParam("/v1/me/player/next"), { method: "POST" });
     }
@@ -1990,7 +2000,7 @@ function renderArtist() {
     artist.paletteUrl = artist.image;
     extractPalette(artist.image).then((palette) => {
       if (state.artist !== artist) return;
-      applyPaletteChannels(elements.viewArtist, "--coll-rgb", palette);
+      applyPaletteChannels(elements.viewArtist, "--coll-rgb", palette, { scrimBoost: true });
     }).catch(() => {});
   }
   if (elements.artistArt) {
@@ -2432,6 +2442,27 @@ async function resolveContextName(uri) {
   return state.contextNameCache[uri];
 }
 
+// #14: list re-renders replaceChildren() their container; if the focused row is
+// inside, focus drops to <body> and the D-pad goes dead until a blind keypress.
+// Capture the focused row's index before the wipe and, if focus didn't survive,
+// restore the same index (clamped) or the container's first focusable.
+function captureListFocusIndex(container) {
+  const active = document.activeElement;
+  if (!container || !(active instanceof HTMLElement) || !container.contains(active)) return -1;
+  const rows = container.querySelectorAll(".focusable");
+  return Math.max(0, Array.prototype.indexOf.call(rows, active.closest(".focusable")));
+}
+
+function restoreListFocusIndex(container, index) {
+  if (!container || index < 0) return;
+  const active = document.activeElement;
+  // Focus survived (e.g. it was on a sibling control that wasn't re-rendered).
+  if (active && active !== document.body && active !== document.documentElement) return;
+  const rows = container.querySelectorAll(".focusable");
+  const target = rows.length ? rows[Math.min(index, rows.length - 1)] : null;
+  if (target instanceof HTMLElement) focusElement(target);
+}
+
 // Honest "Up Next" panel. Spotify's queue API can't distinguish explicit queue
 // items from context continuation, so we split best-effort: URIs we queued this
 // session render under "In queue"/"Radio", everything else under "Continuing
@@ -2439,6 +2470,18 @@ async function resolveContextName(uri) {
 function renderQueueDrawer(errorMessage) {
   const list = elements.queueList;
   if (!list) return;
+  const focusIdx = captureListFocusIndex(list);
+  renderQueueDrawerContent(list, errorMessage);
+  restoreListFocusIndex(list, focusIdx);
+  // List collapsed to a non-focusable note (empty/error)? Land on Close so the
+  // remote never goes dead inside the open drawer.
+  if (focusIdx >= 0 && document.activeElement === document.body) {
+    const close = elements.queueDrawer?.querySelector(".queue-drawer__close");
+    if (close) focusElement(close);
+  }
+}
+
+function renderQueueDrawerContent(list, errorMessage) {
   list.replaceChildren();
   invalidateFocusables();
   if (errorMessage) {
@@ -2609,6 +2652,9 @@ function openTrackMenu(track) {
 }
 
 function closeTrackMenu() {
+  // #3 safety net: a long-press interrupted by menu-open/navigation must never
+  // leave a stale .is-holding tint on the row it was charging.
+  clearEnterHold();
   const menu = elements.trackMenu;
   if (!menu || menu.hidden) return;
   menu.classList.remove("is-open");
@@ -2774,7 +2820,8 @@ async function openPlaylistPicker(track) {
   try {
     playlists = await ensureUserPlaylists();
   } catch (error) {
-    logError("Load playlists failed", error);
+    log(`Load playlists failed: ${error?.message || error}`, "warn");
+    showToast("Couldn't load your playlists.", "error");
     if (!isTrackMenuOpen()) return;
     wrap.replaceChildren();
     invalidateFocusables();
@@ -2983,7 +3030,7 @@ async function enqueueRadioTracks(tracks) {
       });
       if (response.status === 429) {
         const retryAfter = Number(response.headers.get("Retry-After") || 30);
-        state.playbackPollBackoffUntil = Math.max(state.playbackPollBackoffUntil, Date.now() + retryAfter * 1000);
+        noteRateLimitBackoff(retryAfter);
         log(`Radio: rate-limited while queueing; stopped after ${queued} track${queued === 1 ? "" : "s"}.`, "warn");
         break;
       }
@@ -3044,12 +3091,26 @@ function withDeviceIdParam(path) {
   return `${path}${sep}device_id=${encodeURIComponent(state.spotifyDeviceId)}`;
 }
 
+// #4: a missing TV player is the most common dead-end on a fresh session.
+// Surface one actionable toast (latched to once a minute so transport mashing
+// doesn't spam) and keep throwing so callers abort cleanly — controls stay
+// visible and focusable, the user just gets told what to do.
+const NO_DEVICE_TOAST_EVERY_MS = 60000;
+let _noDeviceToastAt = 0;
+
 async function ensureSpotifyDeviceReady() {
   if (state.spotifyDeviceId && state.spotifyPlayer) return state.spotifyDeviceId;
   try {
     return await createSpotifyPlayer();
   } catch (error) {
-    throw new Error(`TV player not ready: ${error?.message || error}`);
+    const now = Date.now();
+    if (now - _noDeviceToastAt >= NO_DEVICE_TOAST_EVERY_MS) {
+      _noDeviceToastAt = now;
+      showToast("No TV player yet — open Settings and press Create TV Player.", "warn");
+    }
+    const err = new Error(`TV player not ready: ${error?.message || error}`);
+    err.handled = true; // logError logs it as a warning, no duplicate toast
+    throw err;
   }
 }
 
@@ -3079,19 +3140,36 @@ function activateSpotifyElement() {
   }
 }
 
+// #6: map the statuses users actually hit to actionable 10-foot copy. The raw
+// Spotify body goes to the diagnostics log only — toasts stay human.
+const SPOTIFY_ERROR_COPY = {
+  401: "Session expired — re-pair from Settings",
+  403: "Spotify Premium or permissions issue — try re-pairing from Settings",
+  404: "No active device — create the TV player in Settings",
+  429: "Spotify is rate-limiting; retrying shortly",
+};
+
 async function readSpotifyError(response) {
+  let raw = "";
   try {
     const text = await response.text();
-    if (!text) return "no body";
-    try {
-      const parsed = JSON.parse(text);
-      return parsed?.error?.message || parsed?.error?.reason || text.slice(0, 200);
-    } catch {
-      return text.slice(0, 200);
+    if (text) {
+      try {
+        const parsed = JSON.parse(text);
+        raw = parsed?.error?.message || parsed?.error?.reason || text.slice(0, 200);
+      } catch {
+        raw = text.slice(0, 200);
+      }
     }
   } catch {
-    return "unreadable body";
+    raw = "unreadable body";
   }
+  const friendly = SPOTIFY_ERROR_COPY[response.status];
+  if (friendly) {
+    if (raw) log(`Spotify ${response.status} detail: ${raw}`, "warn");
+    return friendly;
+  }
+  return raw || "no body";
 }
 
 function clearKeys() {
@@ -3531,13 +3609,17 @@ async function createSpotifyPlayerInternal() {
 
   state.spotifyPlayer.addListener("ready", ({ device_id }) => {
     state.spotifyDeviceId = device_id;
+    state.spotifyDeviceOffline = false;
     elements.deviceStatus.textContent = `TV player ready`;
     log(`Spotify player ready. Device ID: ${device_id}`, "success");
     renderSpotifyFacts();
   });
 
   state.spotifyPlayer.addListener("not_ready", ({ device_id }) => {
+    // #15: keep the status strip honest — the SDK device dropped off Connect.
+    state.spotifyDeviceOffline = true;
     log(`Spotify device went offline: ${device_id}`, "error");
+    renderSpotifyFacts();
   });
 
   state.spotifyPlayer.addListener("initialization_error", ({ message }) => log(`Spotify initialization error: ${message}`, "error"));
@@ -3652,13 +3734,31 @@ async function transferPlayback() {
   await transferToDevice(state.spotifyDeviceId);
 }
 
+// Resolve a Connect device id to a name worth toasting. knownDevices is the
+// last /me/player/devices payload; the TV's own SDK device may not be in it yet.
+function deviceDisplayName(deviceId) {
+  const match = (state.knownDevices || []).find((device) => device.id === deviceId);
+  if (match?.name) return match.name;
+  if (deviceId && deviceId === state.spotifyDeviceId) return "this TV";
+  return "the selected device";
+}
+
 async function transferToDevice(deviceId) {
   if (!deviceId) throw new Error("Missing Spotify device id.");
   const response = await spotifyApiFetch("/v1/me/player", {
     method: "PUT",
     body: JSON.stringify({ device_ids: [deviceId], play: true }),
   });
-  log(`Spotify transfer playback returned ${response.status}.`, response.ok ? "success" : "error");
+  if (!response.ok) {
+    const detail = await readSpotifyError(response);
+    showToast(`Couldn't move playback: ${detail}`, "error");
+    log(`Spotify transfer playback returned ${response.status}: ${detail}`, "warn");
+    const error = new Error(`Spotify transfer failed (${response.status})`);
+    error.handled = true; // friendly toast already shown
+    throw error;
+  }
+  log(`Spotify transfer playback returned ${response.status}.`, "success");
+  showToast(`Playback moved to ${deviceDisplayName(deviceId)}.`, "success");
   await loadDevices().catch((error) => logError("Device refresh failed", error));
 }
 
@@ -3693,6 +3793,18 @@ function getPlaybackPollInterval() {
   return 15000;
 }
 
+// #16: feed a 429 Retry-After into the shared poll backoff and show one
+// low-profile toast per backoff window (not per suppressed request).
+let _rateLimitToastWindowEnd = 0;
+function noteRateLimitBackoff(retryAfterSec) {
+  const until = Date.now() + retryAfterSec * 1000;
+  state.playbackPollBackoffUntil = Math.max(state.playbackPollBackoffUntil, until);
+  if (Date.now() >= _rateLimitToastWindowEnd) {
+    _rateLimitToastWindowEnd = state.playbackPollBackoffUntil;
+    showToast(`Spotify rate-limited — retrying in ${Math.max(1, Math.round(retryAfterSec))}s.`, "info");
+  }
+}
+
 // Drive periodic playback refreshes so a track change on the phone (or any
 // external device) is picked up here within a few seconds. Polls are paused
 // when the tab is hidden, when signed out, and during a Retry-After backoff.
@@ -3709,9 +3821,9 @@ function startPlaybackPolling(reason = "") {
     getCurrentPlayback()
       .catch((err) => {
         if (err && err.status === 429) {
-          const ms = Math.max(5000, Number(err.retryAfter || 30) * 1000);
-          state.playbackPollBackoffUntil = Date.now() + ms;
-          log(`Spotify playback poll rate-limited; backing off ${Math.round(ms / 1000)}s.`, "warn");
+          const sec = Math.max(5, Number(err.retryAfter || 30));
+          noteRateLimitBackoff(sec);
+          log(`Spotify playback poll rate-limited; backing off ${sec}s.`, "warn");
           return;
         }
         // Transient failures (network blips, 5xx) just skip a beat — the next
@@ -3807,7 +3919,7 @@ function renderShellState() {
   const hasToken = Boolean(getStoredAccessToken() || localStorage.getItem(storageKeys.refreshToken));
   elements.connectionStatus.textContent = hasToken ? "Signed in" : "Not signed in";
   elements.deviceStatus.textContent = state.spotifyDeviceId
-    ? "TV player ready"
+    ? (state.spotifyDeviceOffline ? "TV player offline" : "TV player ready")
     : state.spotifyPlayerPromise
       ? "Creating TV player"
       : "No TV player";
@@ -4090,7 +4202,7 @@ function applyAmbientPalette(palette) {
     if (c) elements.viewAmbient.style.setProperty("--ambient-accent-c", c);
   }
   // Now Playing shares the track palette: a subtle tint instead of flat black.
-  applyPaletteChannels(elements.viewNow, "--np-rgb", palette);
+  applyPaletteChannels(elements.viewNow, "--np-rgb", palette, { scrimBoost: true });
   // Visualizer background wash picks up the palette via CSS rgba(var(--viz-rgb)).
   applyPaletteChannels(elements.viewAmbient, "--viz-rgb", palette);
   // The procedural Scene harmonizes with the playing album: re-tint sky/layers
@@ -4100,11 +4212,22 @@ function applyAmbientPalette(palette) {
 
 // Writes a palette entry as bare "r, g, b" channels so CSS can compose its own
 // alphas via rgba(var(--prop), a) — color-mix() is unavailable on TV Blink.
-function applyPaletteChannels(el, prop, palette) {
+// #18: billboard views also get --tint-scrim-boost — a bright palette washes
+// out the white header text, so CSS deepens the existing gradient scrim by this
+// extra alpha (no text-color flip, no filters).
+function applyPaletteChannels(el, prop, palette, { scrimBoost = false } = {}) {
   if (!el || !palette?.length) return;
   const match = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(palette[0] || "");
   if (!match) return;
-  el.style.setProperty(prop, `${match[1]}, ${match[2]}, ${match[3]}`);
+  const r = Number(match[1]);
+  const g = Number(match[2]);
+  const b = Number(match[3]);
+  el.style.setProperty(prop, `${r}, ${g}, ${b}`);
+  if (scrimBoost) {
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const boost = lum > 0.72 ? 0.28 : lum > 0.55 ? 0.18 : lum > 0.42 ? 0.1 : 0;
+    el.style.setProperty("--tint-scrim-boost", String(boost));
+  }
 }
 
 function extractPalette(url) {
@@ -5503,10 +5626,12 @@ function log(message, level = "info") {
 
 function logError(context, error) {
   const message = error instanceof Error ? error.message : String(error);
-  log(`${context}: ${message}`, "error");
+  // Errors flagged `handled` already showed their own friendly toast — log
+  // them as warnings so log()'s error→toast path can't double-toast.
+  log(`${context}: ${message}`, error?.handled ? "warn" : "error");
 }
 
-function showToast(message, level) {
+function showToast(message, level = "info") {
   if (!elements.toastStack) return;
   const toast = document.createElement("div");
   toast.className = `toast ${level}`;
@@ -5516,10 +5641,11 @@ function showToast(message, level) {
   while (elements.toastStack.children.length > 3) {
     elements.toastStack.firstElementChild?.remove();
   }
+  // 10-foot reading distance needs longer dwell than a desktop toast.
   window.setTimeout(() => {
     toast.classList.add("is-leaving");
     window.setTimeout(() => toast.remove(), 220);
-  }, level === "error" ? 4500 : 3000);
+  }, level === "error" ? 7000 : 5000);
 }
 
 function sendServerLog(payload) {
