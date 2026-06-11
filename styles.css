@@ -1763,6 +1763,13 @@ body.has-pill .app {
   text-overflow: ellipsis;
 }
 
+/* "· on <device>" suffix inside the artist line when another Connect device
+   holds playback — same footprint, just an accent tint so it reads as status. */
+.np-pill__device {
+  color: var(--blue);
+  font-weight: 700;
+}
+
 .np-pill__progress {
   display: block;
   height: 3px;

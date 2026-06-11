@@ -3954,6 +3954,10 @@ function updateNowPlayingFromSdk(playerState) {
   if (typeof playerState.repeat_mode === "number") {
     state.repeat = REPEAT_CYCLE[playerState.repeat_mode] || "off";
   }
+  // SDK state means this TV is the active player.
+  if (state.spotifyDeviceId) {
+    state.activeDevice = { id: state.spotifyDeviceId, name: "" };
+  }
   renderNowPlaying();
 }
 
@@ -3976,6 +3980,9 @@ function updateNowPlayingFromWebApi(playback) {
   };
   if (typeof playback.shuffle_state === "boolean") state.shuffle = playback.shuffle_state;
   if (typeof playback.repeat_state === "string") state.repeat = playback.repeat_state;
+  if (playback.device?.id) {
+    state.activeDevice = { id: playback.device.id, name: playback.device.name || "" };
+  }
   renderNowPlaying();
 }
 
@@ -4264,7 +4271,18 @@ function renderNpPill() {
     else elements.npPillArt.removeAttribute("src");
   }
   if (elements.npPillTitle) elements.npPillTitle.textContent = now.title || "Nothing playing";
-  if (elements.npPillArtist) elements.npPillArtist.textContent = now.artist || "";
+  if (elements.npPillArtist) {
+    // When another device holds playback, fold "· on <device>" into the artist
+    // line — same footprint, the line already ellipsizes.
+    elements.npPillArtist.replaceChildren(document.createTextNode(now.artist || ""));
+    const remote = state.activeDevice?.id && state.activeDevice.id !== state.spotifyDeviceId;
+    if (remote) {
+      const dev = document.createElement("span");
+      dev.className = "np-pill__device";
+      dev.textContent = ` · on ${state.activeDevice.name || "another device"}`;
+      elements.npPillArtist.append(dev);
+    }
+  }
   if (elements.npPillPlayBtn) {
     const isPlaying = !now.paused;
     elements.npPillPlayBtn.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
