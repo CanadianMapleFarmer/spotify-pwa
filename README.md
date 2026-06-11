@@ -89,68 +89,21 @@ Icon URL: https://<your-host>/public/icons/spotify-logo.png
 
 Restart the TV after installation if VIDAA does not show the tile immediately.
 
-## Scene image-sequence backend (optional, for TV co-play with Spotify)
+## Scene (procedural ambient scenery)
 
-VIDAA pauses other media whenever a `<video>` decoder engages, so on the TV
-Spotify stops while a Scene clip plays. The workaround is an image-sequence
-"video": a Cloud Function pre-converts Pexels MP4s to JPG frames stored in
-Firebase Storage, the client cycles them with `<img>` updates, and no video
-decoder ever engages.
+VIDAA pauses Spotify whenever a `<video>` decoder engages, so Scene never plays
+video. Instead the client renders a Roku-City-style layered illustration
+entirely on-device: a palette-tinted gradient sky, seeded silhouette layers
+(nature mountains/treeline or a city skyline with lit windows) drifting in slow
+parallax, and a 30fps-capped particle canvas for stars, clouds and car-light
+streaks. The album palette and the local clock (dawn/evening/night) tint each
+scene; the **Skip** button re-seeds a fresh variation, and the **Nature/City**
+buttons switch categories. No backend, no network, no setup required.
 
-### One-time setup
-
-Two steps the Firebase CLI cannot do (console only):
-
-1. Upgrade the Firebase project to the **Blaze plan** (required for any Cloud
-   Function deploys; free-tier quotas still apply for actual usage). Firebase
-   Console → Upgrade.
-2. **Enable Storage** in the Firebase Console (Build → Storage → Get started),
-   default location `us-central1`. First-time bucket creation is a console
-   wizard.
-
-Then run the one-shot script from the repo root:
-
-```sh
-./scripts/setup-scene-backend.sh
-```
-
-It installs function deps, enables the needed Cloud APIs via `gcloud`
-(best-effort — Firebase will enable any missing ones on first deploy anyway),
-prompts for and stores the Pexels API key as a function secret, deploys
-Firestore rules + Storage rules + all functions, and offers to trigger the
-first library refresh.
-
-If you'd rather do it manually:
-
-```sh
-cd functions && npm install && cd ..
-firebase functions:secrets:set PEXELS_KEY
-firebase deploy --only firestore:rules,storage,functions
-# (optional) trigger first refresh — console: Functions → refreshSceneLibrary
-```
-
-Finally, on the TV open **Settings → Scene playback → Image-sequence Scene
-mode** and turn it **On**.
-
-### What runs
-
-- `refreshSceneLibrary` (Pub/Sub schedule `0 3 * * 1`): once a week, fetches
-  ~6 nature + ~6 city Pexels clips, ffmpeg-extracts 10fps JPGs scaled to
-  1024w, uploads to Storage, writes `sceneClips/<id>` docs to Firestore, and
-  prunes the previous week's clips from both Storage and Firestore.
-- `listSceneClips` (HTTPS): returns the current library by category. Cached
-  with `Cache-Control: max-age=300`.
-- `convertSceneClip` (HTTPS): on-demand single-clip conversion for testing.
-
-### Free-tier sizing notes
-
-- Cloud Functions: ~125k invocations + ~40k GB-s/month free. One weekly refresh
-  uses a fraction of that.
-- Storage: 1 GiB free + 1 GiB/day egress. 12 clips at ~10 MB each ≈ 120 MiB.
-- Firestore: well under the 1 GiB / 50k reads / 20k writes/day free limits.
-
-If you change `TARGET_PER_CATEGORY` in `functions/index.js` upward, watch the
-Storage egress budget — frame JPGs are the bulk of the traffic.
+The old video/image-sequence backend (`functions/`, Pexels key, `sceneClips`
+Firestore collection, Storage clips) is decommissioned — the client no longer
+reads any of it. Firestore itself is still required for phone pair-login
+(`pairSessions`).
 
 ## Interpreting Results
 
