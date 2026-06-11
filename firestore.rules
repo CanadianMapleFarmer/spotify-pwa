@@ -14,13 +14,6 @@ service cloud.firestore {
     match /pairSessions/{pairCode} {
       allow read, write: if true;
     }
-    // Scene library metadata is written by the Cloud Function (admin SDK,
-    // bypasses these rules) and read directly by the client to list available
-    // pre-converted JPG-sequence clips. Public read, no client writes.
-    match /sceneClips/{clipId} {
-      allow read: if true;
-      allow write: if false;
-    }
     match /{document=**} {
       allow read, write: if false;
     }
