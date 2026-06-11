@@ -28,6 +28,7 @@ const storageKeys = {
   sceneCategory: "spotify-pwa.scene-category",
   sceneStripAudio: "spotify-pwa.scene-strip-audio",
   sceneImageSequence: "spotify-pwa.scene-image-sequence",
+  autoplaySimilar: "spotify-pwa.autoplay-similar",
 };
 
 // Image-sequence Scene library: read directly from Firestore (the scheduled
@@ -168,6 +169,17 @@ const state = {
   dataLoading: false,
   queueItems: [], // last-fetched upcoming queue (from /me/player/queue)
   queueReturnFocus: null,
+  // The queue API can't tell us *why* an item is queued, so we remember the URIs
+  // we POSTed ourselves this session. Anything else in GET /me/player/queue is
+  // context continuation (album/playlist Spotify keeps playing by itself).
+  sessionQueuedUris: new Set(), // every uri we queued (menu + radio)
+  radioQueuedUris: new Set(), // subset queued by radio auto-fill
+  radioSeedArtist: "", // artist name the last radio batch was seeded from
+  radioSeededTrackId: "", // latch: radio fires at most once per playing track
+  radioToastShown: false, // first-fire toast, once per session
+  autoplaySimilar: true, // "Autoplay similar music" Settings toggle (persisted)
+  recentlyPlayedCache: null, // { ids:Set, fetchedAt } — radio dedupe source
+  contextNameCache: {}, // context uri → resolved album/playlist name
   trackMenuTrack: null, // track object the context menu is acting on
   trackMenuReturnFocus: null,
   userPlaylists: null, // cached editable playlists for the add-to-playlist picker
@@ -325,6 +337,7 @@ const actions = {
   toggleDebugView,
   toggleSceneStripAudio,
   toggleSceneImageSequence,
+  toggleAutoplaySimilar,
   cancelExit,
   confirmExit,
   openQueueDrawer,
@@ -504,12 +517,16 @@ function hydrateUiPreferences() {
     state.sceneStripAudio = savedStrip === null ? true : savedStrip === "1";
     const savedImgSeq = localStorage.getItem(storageKeys.sceneImageSequence);
     state.sceneUseImageSequence = savedImgSeq === "1";
+    // Default ON: keep the music going when the queue runs out.
+    const savedAutoplay = localStorage.getItem(storageKeys.autoplaySimilar);
+    state.autoplaySimilar = savedAutoplay === null ? true : savedAutoplay === "1";
   } catch {
     // localStorage unavailable; defaults already set
   }
   applyDebugVisibility();
   applySceneStripState();
   applySceneImageSequenceState();
+  applyAutoplaySimilarState();
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === state.ambientMode);
   }
@@ -1189,12 +1206,18 @@ function createMediaCard(item, type) {
     button.addEventListener("click", () => playItem(item, type));
   }
   // Track tiles expose their data so openTrackMenuFromFocus can build a menu
-  // target without needing a per-view lookup table.
+  // target without needing a per-view lookup table. Album/artist fields feed
+  // context-aware playback ("play in album"), Go to Album, and Start Radio.
   if (type === "track" && item?.uri) {
     button.dataset.trackUri = item.uri;
+    button.dataset.trackId = item.id || "";
     button.dataset.trackName = item.name || "";
     button.dataset.trackArtist = (item.artists || []).map((a) => a.name).join(", ");
     button.dataset.trackImage = image || "";
+    button.dataset.albumUri = item.album?.uri || "";
+    button.dataset.albumId = item.album?.id || "";
+    button.dataset.albumName = item.album?.name || "";
+    button.dataset.artistIds = (item.artists || []).map((a) => a.id).filter(Boolean).join(",");
   }
   return button;
 }
@@ -1203,9 +1226,15 @@ async function playItem(item, type) {
   activateSpotifyElement();
   requireAccessToken();
   await ensureSpotifyDeviceReady();
+  // Single tracks play inside their album context so playback continues past
+  // the song (a bare-uris play stops dead when the track ends). Fall back to
+  // the bare URI only when no album is known.
+  const albumUri = item.album?.uri || "";
   const body = (type === "playlist" || type === "album")
     ? { context_uri: item.uri }
-    : { uris: [item.uri] };
+    : albumUri
+      ? { context_uri: albumUri, offset: { uri: item.uri } }
+      : { uris: [item.uri] };
   const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/play"), {
     method: "PUT",
     body: JSON.stringify(body),
@@ -1293,9 +1322,12 @@ function normalizeCollectionTrack(track) {
     id: track.id || "",
     name: track.name || "Untitled",
     artist: (track.artists || []).map((artist) => artist.name).join(", "),
+    artistIds: (track.artists || []).map((artist) => artist.id).filter(Boolean),
     duration: track.duration_ms || 0,
     image: images[images.length - 1]?.url || images[0]?.url || "",
     album: track.album?.name || "",
+    albumUri: track.album?.uri || "",
+    albumId: track.album?.id || "",
     year: releaseDate ? releaseDate.slice(0, 4) : "",
   };
 }
@@ -1595,11 +1627,18 @@ function closeQueueDrawer() {
 
 function normalizeQueueTrack(item) {
   const images = item?.album?.images || [];
+  // GET /me/player/queue returns full track objects — keep album + artist ids so
+  // queue rows can play in-context and feed the radio dedupe set.
   return {
     uri: item?.uri || "",
+    id: item?.id || "",
     name: item?.name || "Untitled",
     artist: (item?.artists || []).map((a) => a.name).join(", "),
+    artistIds: (item?.artists || []).map((a) => a.id).filter(Boolean),
     image: images[images.length - 1]?.url || images[0]?.url || "",
+    albumUri: item?.album?.uri || "",
+    albumId: item?.album?.id || "",
+    albumName: item?.album?.name || "",
   };
 }
 
@@ -1610,6 +1649,72 @@ async function fetchQueueItems() {
   return state.queueItems;
 }
 
+function queueSectionHead(label) {
+  const head = document.createElement("p");
+  head.className = "queue-section-head";
+  head.textContent = label;
+  return head;
+}
+
+function buildQueueRow(track, position) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "focusable queue-row";
+  row.dataset.uri = track.uri || "";
+  const art = track.image ? `url("${escapeHtml(track.image)}")` : "none";
+  row.innerHTML = `
+    <span class="queue-row__art" style="background-image:${art}"></span>
+    <span class="queue-row__body">
+      <span class="queue-row__title">${escapeHtml(track.name)}</span>
+      <span class="queue-row__artist">${escapeHtml(track.artist)}</span>
+    </span>
+    <span class="queue-row__pos">${position}</span>
+  `;
+  row.addEventListener("click", () => {
+    playQueueTrack(track).catch((error) => logError("Play from queue failed", error));
+  });
+  return row;
+}
+
+// Friendly fallback header while the context name resolves (or if it can't).
+function contextTypeLabel(uri) {
+  const type = String(uri || "").split(":")[1] || "";
+  if (type === "album") return "Continuing from this album";
+  if (type === "playlist") return "Continuing from this playlist";
+  if (type === "artist") return "Continuing from this artist";
+  return "Up next";
+}
+
+// Resolve a context uri (album/playlist/artist) to its display name, cached per
+// session so reopening the drawer doesn't refetch.
+async function resolveContextName(uri) {
+  if (!uri) return "";
+  if (state.contextNameCache[uri] !== undefined) return state.contextNameCache[uri];
+  const match = /^spotify:(album|playlist|artist):([A-Za-z0-9]+)$/.exec(uri);
+  if (!match) {
+    state.contextNameCache[uri] = "";
+    return "";
+  }
+  const [, kind, id] = match;
+  const path = kind === "album"
+    ? `/v1/albums/${id}`
+    : kind === "playlist"
+      ? `/v1/playlists/${id}?fields=name`
+      : `/v1/artists/${id}`;
+  try {
+    const data = await spotifyApiJson(path);
+    state.contextNameCache[uri] = data?.name || "";
+  } catch (error) {
+    logError("Context name lookup failed", error);
+    state.contextNameCache[uri] = "";
+  }
+  return state.contextNameCache[uri];
+}
+
+// Honest "Up Next" panel. Spotify's queue API can't distinguish explicit queue
+// items from context continuation, so we split best-effort: URIs we queued this
+// session render under "In queue"/"Radio", everything else under "Continuing
+// from". No fake remove/reorder — the API is append-only.
 function renderQueueDrawer(errorMessage) {
   const list = elements.queueList;
   if (!list) return;
@@ -1621,33 +1726,67 @@ function renderQueueDrawer(errorMessage) {
     list.append(note);
     return;
   }
-  const items = state.queueItems;
-  if (!items || !items.length) {
+
+  const now = state.nowPlaying;
+  if (now) {
+    list.append(queueSectionHead("Now playing"));
+    const nowRow = document.createElement("div");
+    nowRow.className = "queue-row queue-row--now";
+    const art = now.image ? `url("${escapeHtml(now.image)}")` : "none";
+    nowRow.innerHTML = `
+      <span class="queue-row__art" style="background-image:${art}"></span>
+      <span class="queue-row__body">
+        <span class="queue-row__title">${escapeHtml(now.title)}</span>
+        <span class="queue-row__artist">${escapeHtml(now.artist)}</span>
+      </span>
+      <span class="queue-row__pos">${now.paused ? "Paused" : "Playing"}</span>
+    `;
+    list.append(nowRow);
+  }
+
+  const items = state.queueItems || [];
+  if (!items.length) {
     const note = document.createElement("p");
     note.className = "queue-drawer__note";
-    note.textContent = "Nothing queued. Add tracks from a collection's ⋯ menu.";
+    note.textContent = "Nothing up next. Spotify's queue is append-only — press Right on any track and choose Add to Queue, or leave Autoplay on to keep the music going.";
     list.append(note);
     return;
   }
-  items.forEach((track, index) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "focusable queue-row";
-    row.dataset.uri = track.uri || "";
-    const art = track.image ? `url("${escapeHtml(track.image)}")` : "none";
-    row.innerHTML = `
-      <span class="queue-row__art" style="background-image:${art}"></span>
-      <span class="queue-row__body">
-        <span class="queue-row__title">${escapeHtml(track.name)}</span>
-        <span class="queue-row__artist">${escapeHtml(track.artist)}</span>
-      </span>
-      <span class="queue-row__pos">${index + 1}</span>
-    `;
-    row.addEventListener("click", () => {
-      playQueueTrack(track).catch((error) => logError("Play from queue failed", error));
-    });
-    list.append(row);
-  });
+
+  const queued = [];
+  const radio = [];
+  const fromContext = [];
+  for (const track of items) {
+    if (track.uri && state.radioQueuedUris.has(track.uri)) radio.push(track);
+    else if (track.uri && state.sessionQueuedUris.has(track.uri)) queued.push(track);
+    else fromContext.push(track);
+  }
+  // Positions reflect the real playback order from the API, not section order.
+  const positionOf = (track) => items.indexOf(track) + 1;
+  const appendRows = (tracks) => {
+    for (const track of tracks) list.append(buildQueueRow(track, positionOf(track)));
+  };
+
+  if (queued.length) {
+    list.append(queueSectionHead("In queue"));
+    appendRows(queued);
+  }
+  if (fromContext.length) {
+    const ctxUri = now?.contextUri || "";
+    const cachedName = ctxUri ? state.contextNameCache[ctxUri] : "";
+    list.append(queueSectionHead(cachedName ? `Continuing from: ${cachedName}` : contextTypeLabel(ctxUri)));
+    appendRows(fromContext);
+    // Resolve the context name in the background and re-render once known.
+    if (ctxUri && state.contextNameCache[ctxUri] === undefined) {
+      resolveContextName(ctxUri).then((name) => {
+        if (name && isQueueDrawerOpen()) renderQueueDrawer();
+      });
+    }
+  }
+  if (radio.length) {
+    list.append(queueSectionHead(state.radioSeedArtist ? `Radio: similar to ${state.radioSeedArtist}` : "Radio"));
+    appendRows(radio);
+  }
 }
 
 async function playQueueTrack(track) {
@@ -1655,9 +1794,14 @@ async function playQueueTrack(track) {
   activateSpotifyElement();
   requireAccessToken();
   await ensureSpotifyDeviceReady();
+  // Play inside the track's album context where known so music continues after
+  // the song; a bare-uris play would stop dead and abandon any continuation.
+  const body = track.albumUri
+    ? { context_uri: track.albumUri, offset: { uri: track.uri } }
+    : { uris: [track.uri] };
   const response = await spotifyApiFetch(withDeviceIdParam("/v1/me/player/play"), {
     method: "PUT",
-    body: JSON.stringify({ uris: [track.uri] }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     throw new Error(`Play failed (${response.status}): ${await readSpotifyError(response)}`);
@@ -1686,7 +1830,17 @@ function openTrackMenuFromFocus() {
     const index = Number(collectionRow.dataset.index);
     const track = state.collection?.tracks?.[index];
     if (track && track.uri) {
-      openTrackMenu(track);
+      // Album-track payloads are simplified (no nested album object) — the
+      // collection itself is the album, so backfill from it for Go to Album.
+      const coll = state.collection;
+      const fromAlbumColl = coll?.type === "album";
+      openTrackMenu({
+        ...track,
+        albumUri: track.albumUri || (fromAlbumColl ? coll.contextUri : ""),
+        albumId: track.albumId || (fromAlbumColl ? coll.id : ""),
+        albumName: track.album || (fromAlbumColl ? coll.title : ""),
+        image: track.image || (fromAlbumColl ? coll.image : ""),
+      });
       return true;
     }
   }
@@ -1695,9 +1849,14 @@ function openTrackMenuFromFocus() {
   if (tile && tile.dataset.trackUri) {
     openTrackMenu({
       uri: tile.dataset.trackUri,
+      id: tile.dataset.trackId || "",
       name: tile.dataset.trackName || "Untitled",
       artist: tile.dataset.trackArtist || "",
       image: tile.dataset.trackImage || "",
+      albumUri: tile.dataset.albumUri || "",
+      albumId: tile.dataset.albumId || "",
+      albumName: tile.dataset.albumName || "",
+      artistIds: (tile.dataset.artistIds || "").split(",").filter(Boolean),
     });
     return true;
   }
@@ -1752,6 +1911,12 @@ function focusFirstActive() {
   if (focusables.length) focusElement(focusables[0]);
 }
 
+// "spotify:track:ID" → "ID" (also works for album/artist uris).
+function spotifyUriId(uri) {
+  const parts = String(uri || "").split(":");
+  return parts.length === 3 ? parts[2] : "";
+}
+
 function renderTrackMenuRoot() {
   const wrap = elements.trackMenuActions;
   if (!wrap) return;
@@ -1767,7 +1932,64 @@ function renderTrackMenuRoot() {
   wrap.append(trackMenuButton("Add to Playlist…", () => {
     openPlaylistPicker(track).catch((error) => logError("Playlist picker failed", error));
   }));
+
+  // Save/Remove Liked Songs. Render immediately with the optimistic label and
+  // fix it up async once /me/tracks/contains answers — TV remotes shouldn't
+  // wait on a round trip before the menu is usable.
+  const trackId = track.id || spotifyUriId(track.uri);
+  if (trackId) {
+    const likeBtn = trackMenuButton("Save to Liked Songs", () => {
+      toggleTrackSaved(track, trackId, likeBtn.dataset.saved === "1").catch((error) => {
+        logError("Liked Songs update failed", error);
+        showToast("Couldn't update Liked Songs.", "error");
+      });
+    });
+    likeBtn.dataset.saved = "0";
+    wrap.append(likeBtn);
+    spotifyApiJson(`/v1/me/tracks/contains?ids=${encodeURIComponent(trackId)}`)
+      .then((result) => {
+        const saved = Array.isArray(result) && result[0] === true;
+        if (!isTrackMenuOpen() || state.trackMenuTrack !== track) return;
+        likeBtn.dataset.saved = saved ? "1" : "0";
+        likeBtn.textContent = saved ? "Remove from Liked Songs" : "Save to Liked Songs";
+      })
+      .catch((error) => logError("Liked Songs check failed", error));
+  }
+
+  const albumId = track.albumId || spotifyUriId(track.albumUri);
+  if (albumId) {
+    wrap.append(trackMenuButton("Go to Album", () => {
+      const albumItem = {
+        id: albumId,
+        uri: track.albumUri || `spotify:album:${albumId}`,
+        name: track.albumName || track.album || "Album",
+        images: track.image ? [{ url: track.image }] : [],
+        artists: track.artist ? [{ name: track.artist }] : [],
+      };
+      closeTrackMenu();
+      openCollection(albumItem, "album").catch((error) => logError("Go to album failed", error));
+    }));
+  }
+
+  wrap.append(trackMenuButton("Start Radio", () => {
+    startRadioFromTrack(track).catch((error) => {
+      logError("Start radio failed", error);
+      showToast("Couldn't start radio.", "error");
+    });
+  }));
   focusFirstActive();
+}
+
+async function toggleTrackSaved(track, trackId, saved) {
+  const response = await spotifyApiFetch(`/v1/me/tracks?ids=${encodeURIComponent(trackId)}`, {
+    method: saved ? "DELETE" : "PUT",
+  });
+  if (!response.ok) {
+    throw new Error(`Liked Songs ${saved ? "remove" : "save"} failed (${response.status}): ${await readSpotifyError(response)}`);
+  }
+  showToast(saved ? `Removed "${track.name}" from Liked Songs.` : `Saved "${track.name}" to Liked Songs.`, "success");
+  log(`${saved ? "Removed" : "Saved"} ${track.name} ${saved ? "from" : "to"} Liked Songs.`, "success");
+  closeTrackMenu();
 }
 
 async function addTrackToQueue(track) {
@@ -1780,6 +2002,9 @@ async function addTrackToQueue(track) {
   if (!response.ok) {
     throw new Error(`Add to queue failed (${response.status}): ${await readSpotifyError(response)}`);
   }
+  // Remember the uri so the Up Next panel can file it under "In queue" rather
+  // than mistaking it for context continuation.
+  state.sessionQueuedUris.add(track.uri);
   showToast(`Added "${track.name}" to the queue.`, "success");
   log(`Queued ${track.name}.`, "success");
   closeTrackMenu();
@@ -1907,6 +2132,171 @@ function hideUpNext() {
   if (!card || card.hidden) return;
   card.classList.remove("is-visible");
   card.hidden = true;
+}
+
+/* ------------------------------------------------------------------ *
+ * W2 Radio auto-fill ("Autoplay similar music")
+ * /v1/recommendations and related-artists are dead for dev-mode apps, so the
+ * seed source is the current track's artists via /v1/artists/{id}/top-tracks.
+ * ------------------------------------------------------------------ */
+
+const RADIO_WINDOW_MS = 25000; // start topping up in the final ~25s of a track
+const RADIO_QUEUE_DELAY_MS = 350; // gap between sequential queue POSTs
+const RADIO_RECENT_TTL_MS = 15 * 60 * 1000; // lazy refresh of recently-played
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Called every progress tick. Fires the auto-fill at most once per track (latch
+// on track id); the latch naturally resets when the track changes.
+function maybeAutofillRadio(position, now) {
+  if (!state.autoplaySimilar || !now || now.paused) return;
+  if (state.repeat !== "off") return;
+  if (!now.id || state.radioSeededTrackId === now.id) return;
+  const remaining = (now.duration || 0) - position;
+  if (!(now.duration > 0 && remaining > 0 && remaining <= RADIO_WINDOW_MS)) return;
+  state.radioSeededTrackId = now.id; // latch before any async work
+  runRadioAutofill(now).catch((error) => logError("Radio auto-fill failed", error));
+}
+
+async function runRadioAutofill(now) {
+  // GET /me/player/queue includes context continuation, so a non-empty result
+  // means Spotify will keep playing on its own (more album/playlist tracks, or
+  // user-queued items) — radio only tops up when the up-next window is empty.
+  const queue = await fetchQueueItems();
+  if (queue.length > 1) return;
+  const exclude = new Set([now.id]);
+  const picked = await pickSimilarTracks({ artistIds: now.artistIds || [], exclude });
+  if (!picked.length) {
+    log("Radio: no similar tracks found to queue.");
+    return;
+  }
+  const queuedCount = await enqueueRadioTracks(picked);
+  if (!queuedCount) return;
+  state.radioSeedArtist = (now.artist || "").split(",")[0].trim();
+  log(`Radio: queued ${queuedCount} similar track${queuedCount === 1 ? "" : "s"} (seeded from ${state.radioSeedArtist}).`, "success");
+  if (!state.radioToastShown) {
+    state.radioToastShown = true;
+    showToast(`Autoplay: queued ${queuedCount} track${queuedCount === 1 ? "" : "s"} similar to ${state.radioSeedArtist}.`, "success");
+  }
+}
+
+// Recently-played ids, cached per session and refreshed lazily so radio doesn't
+// hammer the endpoint once per track.
+async function ensureRecentlyPlayedIds() {
+  const cache = state.recentlyPlayedCache;
+  if (cache && Date.now() - cache.fetchedAt < RADIO_RECENT_TTL_MS) return cache.ids;
+  try {
+    const data = await spotifyApiJson("/v1/me/player/recently-played?limit=30");
+    const ids = new Set((data?.items || []).map((entry) => entry?.track?.id).filter(Boolean));
+    state.recentlyPlayedCache = { ids, fetchedAt: Date.now() };
+    return ids;
+  } catch (error) {
+    logError("Recently-played fetch failed", error);
+    return cache?.ids || new Set();
+  }
+}
+
+// Pull top tracks for 1–2 seed artists, drop anything already heard/queued,
+// shuffle, and pick 3–5.
+async function pickSimilarTracks({ artistIds, exclude }) {
+  const seeds = (artistIds || []).filter(Boolean).slice(0, 2);
+  if (!seeds.length) return [];
+  const recentIds = await ensureRecentlyPlayedIds();
+  const excludeIds = new Set([...(exclude || []), ...recentIds]);
+  for (const item of state.queueItems || []) {
+    if (item.id) excludeIds.add(item.id);
+  }
+  const pool = [];
+  const seen = new Set();
+  for (const artistId of seeds) {
+    try {
+      const data = await spotifyApiJson(`/v1/artists/${encodeURIComponent(artistId)}/top-tracks?market=from_token`);
+      for (const track of data?.tracks || []) {
+        if (!track?.id || !track.uri) continue;
+        if (excludeIds.has(track.id) || seen.has(track.id)) continue;
+        seen.add(track.id);
+        pool.push(track);
+      }
+    } catch (error) {
+      logError("Radio top-tracks fetch failed", error);
+    }
+  }
+  // Fisher–Yates shuffle so repeat sessions don't always queue the same top hits.
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, 3 + Math.floor(Math.random() * 3));
+}
+
+// Append picks to the user's active-device queue sequentially with a small gap.
+// No device_id param on purpose: playback may live on the phone, and the queue
+// belongs to whichever device is active. A 429 aborts the batch and feeds the
+// shared poll backoff so we respect Retry-After everywhere.
+async function enqueueRadioTracks(tracks) {
+  let queued = 0;
+  for (const track of tracks) {
+    try {
+      const response = await spotifyApiFetch(`/v1/me/player/queue?uri=${encodeURIComponent(track.uri)}`, {
+        method: "POST",
+      });
+      if (response.status === 429) {
+        const retryAfter = Number(response.headers.get("Retry-After") || 30);
+        state.playbackPollBackoffUntil = Math.max(state.playbackPollBackoffUntil, Date.now() + retryAfter * 1000);
+        log(`Radio: rate-limited while queueing; stopped after ${queued} track${queued === 1 ? "" : "s"}.`, "warn");
+        break;
+      }
+      if (!response.ok) {
+        log(`Radio: couldn't queue ${track.name} (${response.status}).`, "warn");
+        continue;
+      }
+      queued += 1;
+      state.radioQueuedUris.add(track.uri);
+      state.sessionQueuedUris.add(track.uri);
+      await sleep(RADIO_QUEUE_DELAY_MS);
+    } catch (error) {
+      logError("Radio queue add failed", error);
+      break;
+    }
+  }
+  return queued;
+}
+
+// Explicit "Start Radio" from the track menu: same seed-and-queue, immediately.
+async function startRadioFromTrack(track) {
+  if (!track?.uri) return;
+  requireAccessToken();
+  closeTrackMenu();
+  showToast("Finding similar tracks…", "info");
+  const trackId = track.id || spotifyUriId(track.uri);
+  let artistIds = (track.artistIds || []).filter(Boolean);
+  let artistName = (track.artist || "").split(",")[0].trim();
+  // Tiles built before artist ids were plumbed (or odd payloads) fall back to a
+  // single track lookup for the seed artists.
+  if (!artistIds.length && trackId) {
+    const full = await spotifyApiJson(`/v1/tracks/${encodeURIComponent(trackId)}`);
+    artistIds = (full?.artists || []).map((artist) => artist.id).filter(Boolean);
+    artistName = full?.artists?.[0]?.name || artistName;
+  }
+  if (!artistIds.length) {
+    showToast("Couldn't find artists to seed radio from.", "error");
+    return;
+  }
+  const picked = await pickSimilarTracks({ artistIds, exclude: new Set(trackId ? [trackId] : []) });
+  if (!picked.length) {
+    showToast("No similar tracks found.", "warn");
+    return;
+  }
+  const queuedCount = await enqueueRadioTracks(picked);
+  if (!queuedCount) {
+    showToast("Couldn't queue radio tracks. Start playing something first.", "error");
+    return;
+  }
+  state.radioSeedArtist = artistName;
+  showToast(`Radio: queued ${queuedCount} track${queuedCount === 1 ? "" : "s"} similar to ${artistName}.`, "success");
+  log(`Radio: queued ${queuedCount} similar tracks (manual seed: ${artistName}).`, "success");
 }
 
 function withDeviceIdParam(path) {
@@ -2703,6 +3093,11 @@ function updateNowPlayingFromSdk(playerState) {
     uri: track.uri || "",
     title: track.name,
     artist: (track.artists || []).map((artist) => artist.name).join(", "),
+    // SDK artists carry uris ("spotify:artist:ID"), not ids — parse them out
+    // so the radio auto-fill can seed from the current track everywhere.
+    artistIds: (track.artists || []).map((artist) => spotifyUriId(artist.uri)).filter(Boolean),
+    albumUri: track.album?.uri || "",
+    contextUri: playerState.context?.uri || "",
     image: track.album?.images?.[0]?.url || "",
     paused: playerState.paused,
     position: playerState.position || 0,
@@ -2724,6 +3119,9 @@ function updateNowPlayingFromWebApi(playback) {
     uri: item.uri || "",
     title: item.name,
     artist: (item.artists || []).map((artist) => artist.name).join(", "),
+    artistIds: (item.artists || []).map((artist) => artist.id).filter(Boolean),
+    albumUri: item.album?.uri || "",
+    contextUri: playback.context?.uri || "",
     image: item.album?.images?.[0]?.url || "",
     paused: !playback.is_playing,
     position: playback.progress_ms || 0,
@@ -2814,6 +3212,7 @@ function renderProgress() {
     elements.sceneNpTime.textContent = timeText;
   }
   maybeUpdateUpNext(position, now);
+  maybeAutofillRadio(position, now);
 }
 
 function renderAmbient() {
@@ -3022,6 +3421,22 @@ function applySceneStripState() {
   const label = document.getElementById("toggleSceneStripState");
   if (btn) btn.setAttribute("aria-checked", state.sceneStripAudio ? "true" : "false");
   if (label) label.textContent = state.sceneStripAudio ? "On" : "Off";
+}
+
+function toggleAutoplaySimilar() {
+  state.autoplaySimilar = !state.autoplaySimilar;
+  try {
+    localStorage.setItem(storageKeys.autoplaySimilar, state.autoplaySimilar ? "1" : "0");
+  } catch {}
+  applyAutoplaySimilarState();
+  log(`Autoplay similar music ${state.autoplaySimilar ? "enabled" : "disabled"}.`);
+}
+
+function applyAutoplaySimilarState() {
+  const btn = document.getElementById("toggleAutoplay");
+  const label = document.getElementById("toggleAutoplayState");
+  if (btn) btn.setAttribute("aria-checked", state.autoplaySimilar ? "true" : "false");
+  if (label) label.textContent = state.autoplaySimilar ? "On" : "Off";
 }
 
 function applyDebugVisibility() {
