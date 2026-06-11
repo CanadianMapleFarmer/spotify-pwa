@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=40">
+    <link rel="stylesheet" href="/styles.css?v=41">
     <meta http-equiv="Cache-Control" content="no-store">
     <script>
       // Bootstraps the service worker independently of app.js. If the module
@@ -89,22 +89,45 @@
     </section>
 
     <main class="app" id="app">
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark"></span>
-          <div>
-            <p class="eyebrow">VIDAA Spotify</p>
-            <h1>Spotify TV</h1>
+      <!-- Left navigation rail: collapsed icon column, labels reveal when focus
+           is inside (focus-within + JS class fallback). Fixed-position so it is
+           one keypress away at any scroll depth; main content keeps a constant
+           left margin, the expanded rail overlays content behind a scrim. -->
+      <nav class="nav nav-rail" id="navRail" aria-label="Primary">
+        <span class="nav-rail__scrim" aria-hidden="true"></span>
+        <div class="nav-rail__inner">
+          <div class="nav-rail__brand" aria-hidden="true">
+            <span class="brand-mark"></span>
+            <span class="nav-rail__brand-label">Spotify TV</span>
+          </div>
+          <div class="nav-rail__items">
+            <button class="focusable nav-item is-active" data-action="setView" data-view="home" aria-label="Home">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5L12 4l8 6.5V20a1 1 0 01-1 1h-4.5v-6h-5v6H5a1 1 0 01-1-1v-9.5z"/></svg>
+              </span>
+              <span class="nav-item__label">Home</span>
+            </button>
+            <button class="focusable nav-item" data-action="setView" data-view="library" aria-label="Library">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4v16M10 4v16M14.5 5.5l4.5 14"/></svg>
+              </span>
+              <span class="nav-item__label">Library</span>
+            </button>
+            <button class="focusable nav-item" data-action="setView" data-view="ambient" aria-label="Ambient">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.4 14.2A8.4 8.4 0 119.8 3.6a6.6 6.6 0 0010.6 10.6z"/></svg>
+              </span>
+              <span class="nav-item__label">Ambient</span>
+            </button>
+            <button class="focusable nav-item" data-action="setView" data-view="settings" aria-label="Settings">
+              <span class="nav-item__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>
+              </span>
+              <span class="nav-item__label">Settings</span>
+            </button>
           </div>
         </div>
-
-        <nav class="nav" aria-label="Primary">
-          <button class="focusable nav-item is-active" data-action="setView" data-view="home">Home</button>
-          <button class="focusable nav-item" data-action="setView" data-view="library">Library</button>
-          <button class="focusable nav-item" data-action="setView" data-view="ambient">Ambient</button>
-          <button class="focusable nav-item" data-action="setView" data-view="settings">Settings</button>
-        </nav>
-      </header>
+      </nav>
 
       <section class="status-strip">
         <span id="connectionStatus">Not signed in</span>
@@ -229,6 +252,10 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.34l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.2z"/></svg>
                 <span>Shuffle</span>
                 <span class="collection-shuffle__state">Off</span>
+              </button>
+              <button class="focusable collection-save" id="collectionSaveBtn" data-action="toggleCollectionSaved" aria-pressed="false" aria-label="Save to library">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.3l-7.1-7.2a4.6 4.6 0 010-6.4 4.4 4.4 0 016.3 0l.8.9.8-.9a4.4 4.4 0 016.3 0 4.6 4.6 0 010 6.4L12 20.3z"/></svg>
+                <span class="collection-save__label">Save</span>
               </button>
             </div>
           </aside>
@@ -567,6 +594,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=44" type="module"></script>
+    <script src="/app.js?v=45" type="module"></script>
   </body>
 </html>

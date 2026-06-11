@@ -11,6 +11,7 @@ const SPOTIFY_SCOPES = [
   "playlist-modify-public",
   "playlist-modify-private",
   "user-library-read",
+  "user-library-modify",
   "user-top-read",
   "user-read-recently-played",
 ];
@@ -291,11 +292,15 @@ const elements = {
   collectionTitle: document.querySelector("#collectionTitle"),
   collectionMeta: document.querySelector("#collectionMeta"),
   collectionShuffleBtn: document.querySelector("#collectionShuffleBtn"),
+  collectionSaveBtn: document.querySelector("#collectionSaveBtn"),
   collectionTracks: document.querySelector("#collectionTracks"),
   diagnostics: document.querySelector("#diagnostics"),
   toggleDebugView: document.querySelector("#toggleDebugView"),
   toggleDebugState: document.querySelector("#toggleDebugState"),
   viewAmbient: document.querySelector("#view-ambient"),
+  viewNow: document.querySelector("#view-now"),
+  viewCollection: document.querySelector("#view-collection"),
+  navRail: document.querySelector("#navRail"),
   phonePairScreen: document.querySelector("#phonePairScreen"),
   phonePairCode: document.querySelector("#phonePairCode"),
   phonePairErrorMessage: document.querySelector("#phonePairErrorMessage"),
@@ -328,6 +333,7 @@ const actions = {
   skipSceneClip,
   playCollection,
   toggleCollectionShuffle,
+  toggleCollectionSaved,
   collectionBack,
   clearKeys,
   testStorage,
@@ -393,6 +399,13 @@ function init() {
   }
 
   document.addEventListener("click", handleClick);
+
+  // Focus-state class fallbacks for old TV Blink builds without :focus-within.
+  // The rail expands (labels + scrim) while focus is inside it; the dimmed
+  // ambient control cluster undims while any of its controls is focused.
+  wireFocusWithinClass(elements.navRail);
+  wireFocusWithinClass(elements.ambientControls);
+
   elements.pairQr?.addEventListener("error", () => {
     elements.pairQr.hidden = true;
     log("Pair QR image failed to load. Use the printed URL on your phone.", "error");
@@ -551,6 +564,17 @@ function hydrateUiPreferences() {
 
 function focusableElements() {
   return activeFocusables();
+}
+
+// Mirrors :focus-within as a .has-focus class — the VIDAA browser predates the
+// pseudo-class, and the rail/ambient-control reveals depend on it.
+function wireFocusWithinClass(container) {
+  if (!container) return;
+  container.addEventListener("focusin", () => container.classList.add("has-focus"));
+  container.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (!next || !container.contains(next)) container.classList.remove("has-focus");
+  });
 }
 
 function isDiagnosticsOpen() {
@@ -733,7 +757,12 @@ function moveFocusDirectional(direction) {
     return;
   }
 
-  const a = active.getBoundingClientRect();
+  // Rail items expand to full open-rail width while focused, which would put
+  // their right edge *past* the leftmost content and make "right" skip it.
+  // Measure from the (collapsed-size) icon box instead so geometry matches
+  // what the user sees as the rail's resting column.
+  const railIcon = active.closest?.(".nav-rail") ? active.querySelector(".nav-item__icon") : null;
+  const a = (railIcon || active).getBoundingClientRect();
   const horizontal = direction === "left" || direction === "right";
 
   const candidates = focusables
@@ -1283,10 +1312,14 @@ async function openCollection(item, type) {
     tracks: [],
     loading: true,
     error: "",
+    saved: null, // null = unknown until the contains-check resolves
+    savedPending: false,
+    paletteUrl: "",
   };
   setView("collection");
   renderCollection();
   focusElement(elements.collectionShuffleBtn);
+  refreshCollectionSaved(state.collection);
   try {
     state.collection.tracks = await fetchCollectionTracks(item, type);
   } catch (error) {
@@ -1354,6 +1387,15 @@ function renderCollection() {
   if (elements.collectionBackdrop) {
     elements.collectionBackdrop.style.backgroundImage = coll.image ? `url("${coll.image}")` : "";
   }
+  // Billboard tint: pull the collection's accent from its artwork once per image
+  // and expose it as --coll-rgb for the scrim/panel tints in CSS.
+  if (coll.image && coll.image !== coll.paletteUrl) {
+    coll.paletteUrl = coll.image;
+    extractPalette(coll.image).then((palette) => {
+      if (state.collection !== coll) return;
+      applyPaletteChannels(elements.viewCollection, "--coll-rgb", palette);
+    }).catch(() => {});
+  }
   if (elements.collectionArt) {
     if (coll.image) elements.collectionArt.src = coll.image;
     else elements.collectionArt.removeAttribute("src");
@@ -1372,6 +1414,7 @@ function renderCollection() {
       .join(" · ");
   }
   updateCollectionShuffleBtn();
+  renderCollectionSaveBtn();
 
   const list = elements.collectionTracks;
   list.replaceChildren();
@@ -1458,6 +1501,84 @@ function toggleCollectionShuffle() {
   log(`Collection shuffle ${state.collectionShuffle ? "on" : "off"}.`);
 }
 
+/* === Save to library (albums: /v1/me/albums, playlists: follow/unfollow) === */
+
+let _userProfile = null;
+async function getUserProfile() {
+  if (_userProfile?.id) return _userProfile;
+  _userProfile = await spotifyApiJson("/v1/me");
+  return _userProfile;
+}
+
+function renderCollectionSaveBtn() {
+  const btn = elements.collectionSaveBtn;
+  const coll = state.collection;
+  if (!btn) return;
+  const saved = Boolean(coll?.saved);
+  btn.classList.toggle("is-active", saved);
+  btn.classList.toggle("is-pending", Boolean(coll?.savedPending));
+  btn.setAttribute("aria-pressed", saved ? "true" : "false");
+  btn.setAttribute("aria-label", saved ? "Remove from your library" : "Save to your library");
+  const label = btn.querySelector(".collection-save__label");
+  if (label) label.textContent = saved ? "Saved" : "Save";
+  const heart = btn.querySelector("svg path");
+  if (heart) heart.setAttribute("fill", saved ? "currentColor" : "none");
+}
+
+async function refreshCollectionSaved(coll) {
+  if (!coll?.id) return;
+  try {
+    let saved = null;
+    if (coll.type === "album") {
+      const data = await spotifyApiJson(`/v1/me/albums/contains?ids=${encodeURIComponent(coll.id)}`);
+      if (Array.isArray(data)) saved = Boolean(data[0]);
+    } else {
+      const me = await getUserProfile();
+      const data = await spotifyApiJson(
+        `/v1/playlists/${coll.id}/followers/contains?ids=${encodeURIComponent(me.id)}`
+      );
+      if (Array.isArray(data)) saved = Boolean(data[0]);
+    }
+    if (state.collection === coll && saved !== null) {
+      coll.saved = saved;
+      renderCollectionSaveBtn();
+    }
+  } catch (error) {
+    // Non-fatal: the button still works as a blind toggle.
+    log(`Library state check failed: ${error?.message || error}`, "error");
+  }
+}
+
+async function toggleCollectionSaved() {
+  const coll = state.collection;
+  if (!coll?.id || coll.savedPending) return;
+  const next = !coll.saved;
+  coll.savedPending = true;
+  renderCollectionSaveBtn();
+  try {
+    requireAccessToken();
+    const path = coll.type === "album"
+      ? `/v1/me/albums?ids=${encodeURIComponent(coll.id)}`
+      : `/v1/playlists/${coll.id}/followers`;
+    const response = await spotifyApiFetch(path, { method: next ? "PUT" : "DELETE" });
+    if (!response.ok) {
+      // Tokens minted before user-library-modify was added need a re-pair.
+      if (response.status === 403) {
+        throw new Error("Spotify refused (403) — re-pair from Settings to grant library permissions");
+      }
+      throw new Error(`Spotify returned ${response.status}: ${await readSpotifyError(response)}`);
+    }
+    coll.saved = next;
+    log(`${next ? "Saved to" : "Removed from"} your library: ${coll.title}`, "success");
+  } catch (error) {
+    logError("Library save failed", error);
+    showToast(`Couldn't update your library: ${error?.message || "unknown error"}`, "error");
+  } finally {
+    coll.savedPending = false;
+    renderCollectionSaveBtn();
+  }
+}
+
 function playCollection() {
   return startCollectionPlayback({});
 }
@@ -1542,6 +1663,14 @@ function handleBack() {
     log(`Back: returned to ${target}.`);
     return;
   }
+  // Top-level views (home/library/settings): Back first hops focus to the nav
+  // rail (the TV convention — nav is one Back away from any scroll depth).
+  // Only once focus is already on the rail does Back escalate: Home shows the
+  // exit dialog, other views return Home.
+  if (focusNavRail()) {
+    log("Back: focused the navigation rail.");
+    return;
+  }
   // At the Home root, Back asks whether to close the app instead of being a no-op.
   if (state.currentView === "home") {
     openExitDialog();
@@ -1549,6 +1678,18 @@ function handleBack() {
   }
   setView("home");
   log("Back key observed. Returned to Home.");
+}
+
+// Moves focus to the nav rail's active item. Returns false when focus is
+// already inside the rail (so Back can escalate) or the rail is unavailable.
+function focusNavRail() {
+  const rail = elements.navRail || document.querySelector(".nav-rail");
+  if (!rail || !isVisibleElement(rail.querySelector(".nav-item"))) return false;
+  if (rail.contains(document.activeElement)) return false;
+  const target = rail.querySelector(".nav-item.is-active") || rail.querySelector(".focusable:not([disabled])");
+  if (!target) return false;
+  focusElement(target);
+  return true;
 }
 
 function isExitDialogOpen() {
@@ -3346,11 +3487,24 @@ function refreshAmbientPalette(imageUrl) {
 }
 
 function applyAmbientPalette(palette) {
-  if (!elements.viewAmbient || !palette) return;
-  const [a, b, c] = palette;
-  if (a) elements.viewAmbient.style.setProperty("--ambient-accent-a", a);
-  if (b) elements.viewAmbient.style.setProperty("--ambient-accent-b", b);
-  if (c) elements.viewAmbient.style.setProperty("--ambient-accent-c", c);
+  if (!palette) return;
+  if (elements.viewAmbient) {
+    const [a, b, c] = palette;
+    if (a) elements.viewAmbient.style.setProperty("--ambient-accent-a", a);
+    if (b) elements.viewAmbient.style.setProperty("--ambient-accent-b", b);
+    if (c) elements.viewAmbient.style.setProperty("--ambient-accent-c", c);
+  }
+  // Now Playing shares the track palette: a subtle tint instead of flat black.
+  applyPaletteChannels(elements.viewNow, "--np-rgb", palette);
+}
+
+// Writes a palette entry as bare "r, g, b" channels so CSS can compose its own
+// alphas via rgba(var(--prop), a) — color-mix() is unavailable on TV Blink.
+function applyPaletteChannels(el, prop, palette) {
+  if (!el || !palette?.length) return;
+  const match = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(palette[0] || "");
+  if (!match) return;
+  el.style.setProperty(prop, `${match[1]}, ${match[2]}, ${match[3]}`);
 }
 
 function extractPalette(url) {

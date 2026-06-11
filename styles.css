@@ -4,7 +4,10 @@
   --font-body: "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-family: var(--font-body);
-  font-size: 16px;
+  /* 10-foot type scale: 18px root puts 1rem at caption size and 1.34rem at the
+     24px body minimum recommended for 1080p TV viewing distances. The scale is
+     18 / 21 / 24 / 30 / 44 / hero (5–6 steps), no thin weights anywhere. */
+  font-size: 18px;
   background: #080b10;
   color: #e8ecf1;
   --panel: rgba(15, 19, 27, 0.88);
@@ -12,15 +15,26 @@
   --line: rgba(255, 255, 255, 0.14);
   --text-muted: #aeb8c7;
   --green: #1ed760;
+  /* Slightly desaturated/lightened accent for icon tints and large fills — TVs
+     over-saturate, so the pure brand green is reserved for small highlights. */
+  --green-soft: #4fdf85;
   --blue: #70a6ff;
   --warn: #ffca68;
+  /* TV safe areas (1080p): focusables/text keep >=48px from L/R edges and
+     >=27px from top/bottom; full-bleed imagery may run past them. */
+  --safe-x: 48px;
+  --safe-y: 32px;
+  /* Left nav rail: collapsed reserve width. Content keeps this constant left
+     margin; the expanded rail overlays content rather than reflowing it. */
+  --rail-w: 128px;
   /* Shared corner radii — tokenized so cards/artwork stay visually consistent. */
   --radius-card: 14px;
   --radius-art: 10px;
   /* Elevation language — two resting depths so artwork/panels lift consistently
-     and a focused card reads as raised toward the viewer. */
+     and a focused card reads as raised toward the viewer. Blur radii are kept
+     modest (<=28px) because huge shadow blurs are expensive on the TV GPU. */
   --elev-1: 0 12px 28px rgba(0, 0, 0, 0.45);
-  --elev-2: 0 22px 48px rgba(0, 0, 0, 0.6);
+  --elev-2: 0 16px 24px rgba(0, 0, 0, 0.6);
 }
 
 * {
@@ -97,11 +111,18 @@ input {
 }
 
 .focusable {
-  /* leave room under the sticky nav / page edges when scrollIntoView lands focus;
-     horizontal margin matches the .app safe-area inset so focus never lands on an edge */
-  scroll-margin: 96px 48px;
+  /* leave room from the page edges when scrollIntoView lands focus; matches the
+     .app safe-area inset so focus never lands on a screen edge */
+  scroll-margin: 48px;
+  /* 10-foot focus motion: compositor-only (transform) + a cheap background tint.
+     Components with richer transitions (cards, transport) override this list. */
+  transition: transform 180ms ease, background-color 180ms ease;
 }
 
+/* 10-foot focus state: ring + soft glow + interior fill + slight scale, so the
+   focused element reads from across the room. The fill is an inset shadow with
+   a huge spread, which tints *over* any background (solid buttons included)
+   instead of replacing it. Cards keep their larger 1.06 scale (later rule). */
 .focusable:focus,
 .card:focus,
 .device-card:focus,
@@ -109,7 +130,17 @@ input {
   outline: 3px solid var(--green);
   outline-offset: 3px;
   border-color: var(--green);
-  box-shadow: 0 0 0 6px rgba(30, 215, 96, 0.18);
+  box-shadow:
+    0 0 0 6px rgba(30, 215, 96, 0.18),
+    inset 0 0 0 999px rgba(30, 215, 96, 0.08);
+  transform: scale(1.03);
+}
+
+/* Scroll containers and full-width sheets shouldn't scale — the ring + fill is
+   plenty, and scaling a scrollable region jitters its content on the TV. */
+.log.focusable:focus,
+.settings-toggle.focusable:focus {
+  transform: none;
 }
 
 .focusable:focus:not(:focus-visible) {
@@ -136,8 +167,10 @@ input {
   content: "";
   position: fixed;
   inset: 0;
-  background: rgba(8, 11, 16, 0.76);
-  backdrop-filter: blur(22px);
+  /* No backdrop-filter (expensive + blocky on the TV GPU): a near-opaque wash
+     with a vertical ramp keeps the artwork as a faint colour field only. */
+  background:
+    linear-gradient(180deg, rgba(8, 11, 16, 0.9) 0%, rgba(8, 11, 16, 0.94) 55%, rgba(8, 11, 16, 0.97) 100%);
 }
 
 .ambient-bg.skyline {
@@ -158,11 +191,13 @@ input {
 }
 
 .app {
-  /* 10-foot safe area: inset ~48px L/R at 1080p so no focusable element rides a
-     screen edge (overscan-safe). The min-width:2500px block widens this for 4K. */
-  width: min(1840px, calc(100vw - 96px));
-  margin: 0 auto;
-  padding: 38px 0 56px;
+  /* 10-foot safe area: the fixed left rail reserves --rail-w, the right edge
+     keeps --safe-x, and top/bottom stay clear of overscan. Content no longer
+     centers under a top bar — it flows right of the rail. */
+  width: auto;
+  max-width: 1880px;
+  margin: 0 0 0 var(--rail-w);
+  padding: var(--safe-y) var(--safe-x) 56px 24px;
 }
 
 /* === Exit confirmation dialog === */
@@ -254,11 +289,11 @@ input {
 .toast-stack {
   position: fixed;
   bottom: 36px;
-  right: 28px;
+  right: var(--safe-x, 48px);
   z-index: 50;
   display: grid;
   gap: 10px;
-  width: min(360px, calc(100vw - 48px));
+  width: min(380px, calc(100vw - 96px));
   pointer-events: none;
 }
 
@@ -271,11 +306,10 @@ body.has-pill .toast-stack {
   border: 1px solid rgba(255, 97, 89, 0.32);
   border-left: 4px solid #ff6159;
   border-radius: 12px;
-  background: rgba(12, 16, 24, 0.78);
-  backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  /* Near-opaque panel instead of backdrop-filter — TV GPU hygiene. */
+  background: rgba(12, 16, 24, 0.96);
   color: #e8ecf1;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.5);
   font-size: 0.94rem;
   font-weight: 700;
   line-height: 1.35;
@@ -305,26 +339,83 @@ body.has-pill .toast-stack {
   }
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 28px;
-  margin-bottom: 26px;
+/* === Left navigation rail ===
+   Fixed full-height column at the left edge. Collapsed: icon stack only (page
+   background shows through, content keeps a constant var(--rail-w) margin).
+   Focus inside the rail (focus-within + .has-focus JS fallback for old Blink)
+   reveals the labels and a gradient scrim that overlays — never reflows — the
+   content. Labels/scrim animate with opacity/transform only. */
+.nav-rail {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 60;
+  width: 340px;
+  pointer-events: none;
 }
 
-.brand {
+/* The cinematic full-screen views supply their own Back affordance; the rail
+   stays out of the way there (ambient already hides .nav via its own rule). */
+body[data-view="now"] .nav-rail {
+  display: none !important;
+}
+
+.nav-rail__scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(5, 7, 11, 0.98) 0%, rgba(5, 7, 11, 0.94) 62%, rgba(5, 7, 11, 0) 100%);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.nav-rail:focus-within .nav-rail__scrim,
+.nav-rail.has-focus .nav-rail__scrim {
+  opacity: 1;
+}
+
+.nav-rail__inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  padding: var(--safe-y) 20px var(--safe-y) 36px;
+}
+
+.nav-rail__brand {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
+  min-height: 56px;
+  padding-left: 8px;
+  margin-bottom: 10px;
 }
 
 .brand-mark {
-  width: 54px;
-  height: 54px;
+  flex: none;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--green);
-  box-shadow: inset 0 0 0 14px #07100a;
+  box-shadow: inset 0 0 0 10px #07100a;
+}
+
+.nav-rail__brand-label {
+  font-family: var(--font-display);
+  font-size: 1.16rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.nav-rail__items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .eyebrow {
@@ -366,7 +457,6 @@ h2 {
   letter-spacing: -0.01em;
 }
 
-.nav,
 .button-row,
 .transport {
   display: flex;
@@ -375,15 +465,91 @@ h2 {
   gap: 12px;
 }
 
-.nav-item {
-  min-width: 116px;
-  background: #141b27;
-  color: #e8ecf1;
+.nav-rail .nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 60px; /* collapsed: icon-only hit area; expanded rule widens it */
+  min-height: 60px;
+  margin: 0;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 1.22rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  overflow: visible;
 }
 
-.nav-item.is-active {
+/* While focus is anywhere inside the rail the buttons span the full open width
+   so the ring wraps icon + label together. Width snaps (no layout animation);
+   the perceived motion comes from the label/scrim opacity+transform reveal. */
+.nav-rail:focus-within .nav-item,
+.nav-rail.has-focus .nav-item {
+  width: 100%;
+}
+
+.nav-item__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+.nav-item__icon svg {
+  width: 27px;
+  height: 27px;
+}
+
+.nav-item__label {
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.nav-rail:focus-within .nav-item__label,
+.nav-rail.has-focus .nav-item__label,
+.nav-rail:focus-within .nav-rail__brand-label,
+.nav-rail.has-focus .nav-rail__brand-label {
+  opacity: 1;
+  transform: none;
+}
+
+/* Active view: tinted icon plate + accent bar, readable even collapsed. */
+.nav-rail .nav-item.is-active {
+  color: #eafff2;
+  background: transparent;
+}
+
+.nav-rail .nav-item.is-active .nav-item__icon {
+  background: rgba(30, 215, 96, 0.16);
+  color: var(--green-soft);
+}
+
+.nav-rail .nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 4px;
+  height: 30px;
+  border-radius: 999px;
   background: var(--green);
-  color: #07100a;
+  transform: translateY(-50%);
+}
+
+.nav-rail .nav-item:hover {
+  color: #e8ecf1;
 }
 
 .auth-panel,
@@ -663,7 +829,7 @@ body.debug-on .status-strip {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   font-family: var(--font-display);
-  font-size: 1.16rem;
+  font-size: 1.34rem; /* ~24px — TV body minimum */
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1.3;
@@ -674,7 +840,7 @@ body.debug-on .status-strip {
   margin: 0 2px;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 1rem;
+  font-size: 1.16rem; /* ~21px secondary */
   line-height: 1.35;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -699,7 +865,7 @@ body.debug-on .status-strip {
   object-fit: cover;
   border-radius: 8px;
   background: #111824;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.34);
 }
 
 .now-meta {
@@ -885,7 +1051,7 @@ body[data-view="ambient"] .app {
   overflow: hidden;
   background: linear-gradient(135deg, #1a2231, #0c111b);
   box-shadow:
-    0 54px 140px rgba(0, 0, 0, 0.66),
+    0 32px 70px rgba(0, 0, 0, 0.66),
     0 0 0 1px rgba(255, 255, 255, 0.08) inset;
   transform: rotate(-1.4deg);
 }
@@ -1019,8 +1185,8 @@ body[data-view="ambient"] .app {
   padding: 18px 20px 16px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 18px;
-  background: rgba(8, 11, 18, 0.72);
-  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.5);
+  background: rgba(8, 11, 18, 0.88);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.5);
 }
 
 .scene-np__row {
@@ -1155,7 +1321,7 @@ body.debug-on .scene-np__status {
   border-radius: 50%;
   overflow: visible;
   z-index: 2;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.6);
 }
 
 /* The pulsing ring is a pseudo-element animated with transform + opacity only
@@ -1346,12 +1512,17 @@ body.debug-on .scene-np__status {
   opacity: 0.18;
 }
 
+/* Focused controls must stay visible from 10 feet even while the cluster is
+   dimmed. :focus-within undims the whole cluster; .has-focus is the JS-driven
+   fallback (focusin/focusout) for TV Blink builds without :focus-within. */
 .ambient-controls.is-dim .focusable:focus,
-.ambient-controls.is-dim:focus-within {
+.ambient-controls.is-dim:focus-within,
+.ambient-controls.is-dim.has-focus {
   opacity: 1;
 }
 
-.ambient-controls:focus-within {
+.ambient-controls:focus-within,
+.ambient-controls.has-focus {
   opacity: 1;
 }
 
@@ -1419,12 +1590,14 @@ button.is-active {
 
 @media (min-width: 2500px) {
   :root {
-    font-size: 20px;
+    font-size: 24px;
+    --rail-w: 160px;
+    --safe-x: 70px;
+    --safe-y: 48px;
   }
 
   .app {
-    width: min(3440px, calc(100vw - 140px));
-    padding-top: 58px;
+    max-width: 3440px;
   }
 
   .rail {
@@ -1441,19 +1614,23 @@ button.is-active {
 }
 
 @media (max-width: 900px) {
-  .app {
-    width: min(100vw - 28px, 900px);
-    padding-top: 22px;
+  :root {
+    --rail-w: 84px;
+    --safe-x: 16px;
+    --safe-y: 20px;
   }
 
-  .topbar,
+  .app {
+    padding: 20px 16px 56px 10px;
+  }
+
+  .nav-rail__inner {
+    padding-left: 14px;
+  }
+
   .auth-panel,
   .now-layout {
     display: block;
-  }
-
-  .nav {
-    margin-top: 18px;
   }
 
   .pair-card {
@@ -1469,22 +1646,22 @@ body.has-pill .app {
 /* === Floating now-playing pill === */
 .np-pill {
   position: fixed;
-  left: 50%;
+  /* Optically centered over the content column (right of the rail). */
+  left: calc(50% + (var(--rail-w, 128px) / 2));
   bottom: 20px;
   transform: translateX(-50%);
   z-index: 30;
   display: flex;
   align-items: center;
   gap: 12px;
-  width: min(880px, calc(100vw - 80px));
+  width: min(880px, calc(100vw - var(--rail-w, 128px) - 96px));
   padding: 6px 12px 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(12, 16, 24, 0.78);
-  backdrop-filter: blur(22px) saturate(1.2);
-  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  /* Near-opaque panel instead of backdrop-filter — TV GPU hygiene. */
+  background: rgba(12, 16, 24, 0.95);
   box-shadow:
-    0 28px 70px rgba(0, 0, 0, 0.6),
+    0 16px 36px rgba(0, 0, 0, 0.6),
     0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   transition: opacity 240ms ease, transform 240ms ease;
 }
@@ -1633,7 +1810,7 @@ body.has-pill .app {
 .np-pill:focus-within {
   transform: translateX(-50%) translateY(-4px);
   box-shadow:
-    0 34px 90px rgba(0, 0, 0, 0.66),
+    0 20px 44px rgba(0, 0, 0, 0.66),
     0 0 0 2px var(--green);
 }
 
@@ -1842,17 +2019,15 @@ body.has-pill .app {
 body.debug-on .diagnostics {
   position: fixed;
   top: 80px;
-  right: 24px;
+  right: var(--safe-x, 48px);
   bottom: 130px;
   z-index: 25;
   width: min(420px, calc(100vw - 48px));
   margin: 0;
-  background: rgba(8, 11, 16, 0.92);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(8, 11, 16, 0.97);
   overflow-y: auto;
   border: 1px solid rgba(30, 215, 96, 0.3);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.6);
 }
 
 body.debug-on .diagnostics .log {
@@ -2224,16 +2399,14 @@ body.is-phone-pair {
   padding: 10px 22px;
   border: 2px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  background: rgba(10, 14, 22, 0.55);
+  background: rgba(10, 14, 22, 0.82);
   color: #e8ecf1;
   font-weight: 700;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   transition: transform 140ms ease, background 160ms ease, border-color 160ms ease;
 }
 
 .scene-btn:hover {
-  background: rgba(20, 26, 38, 0.7);
+  background: rgba(20, 26, 38, 0.9);
 }
 
 .scene-btn svg {
@@ -2254,9 +2427,7 @@ body.is-phone-pair {
   padding: 4px;
   border: 2px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  background: rgba(10, 14, 22, 0.55);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(10, 14, 22, 0.82);
 }
 
 .scene-seg {
@@ -2296,11 +2467,9 @@ body.is-phone-pair {
   padding: 10px 24px;
   border: 2px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  background: rgba(10, 14, 22, 0.55);
+  background: rgba(10, 14, 22, 0.82);
   color: #e8ecf1;
   font-weight: 700;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .ambient-mode-btn.is-active {
@@ -2402,6 +2571,12 @@ body.is-phone-pair {
 }
 
 /* === Cinematic full-screen Now Playing === */
+.view-now {
+  /* Palette fallback (muted slate); JS sets --np-rgb from the album art via
+     extractPalette so the view never reads as flat black. */
+  --np-rgb: 44, 58, 78;
+}
+
 .view-now.is-visible {
   position: fixed;
   inset: 0;
@@ -2412,6 +2587,11 @@ body.is-phone-pair {
   min-height: 100vh;
   padding: clamp(28px, 4vw, 80px);
   animation: now-enter 460ms cubic-bezier(0.22, 1, 0.36, 1);
+  background: #06080d;
+  background:
+    radial-gradient(120% 90% at 30% 16%, rgba(var(--np-rgb), 0.34), rgba(6, 8, 13, 0) 64%),
+    radial-gradient(110% 80% at 80% 90%, rgba(var(--np-rgb), 0.2), rgba(6, 8, 13, 0) 58%),
+    #06080d;
 }
 
 .now-backdrop {
@@ -2420,7 +2600,6 @@ body.is-phone-pair {
   z-index: 0;
   background-size: cover;
   background-position: center;
-  background-color: #06080d;
   /* Heavy blur + scale smears the art into a smooth colour wash instead of the
      chunky, over-saturated blobs a light blur leaves on a large surface. The big
      scale/inset keeps the blurred edges off-screen. */
@@ -2461,11 +2640,9 @@ body.is-phone-pair {
   padding: 12px 22px 12px 16px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
-  background: rgba(10, 14, 22, 0.5);
+  background: rgba(10, 14, 22, 0.82);
   color: #e8ecf1;
   font-weight: 700;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
 }
 
 .now-back svg {
@@ -2483,41 +2660,60 @@ body.is-phone-pair {
   to   { opacity: 1; transform: none; }
 }
 
-/* === Collection detail (album / playlist) === */
+/* === Collection detail (album / playlist) — billboard header ===
+   Full-bleed artwork billboard behind the header with a strong vertical scrim
+   (darkest bottom/left for text contrast). No blur of any kind — image +
+   gradient overlays only, which the TV GPU composites cheaply. The page is
+   additionally tinted from the artwork palette via --coll-rgb (set from JS
+   through extractPalette). */
+.view-collection {
+  /* Palette fallback: muted slate so the rgba(var()) tints below always resolve. */
+  --coll-rgb: 78, 98, 128;
+}
+
 .view-collection.is-visible {
   position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   min-height: 100vh;
-  padding: clamp(28px, 4vw, 80px);
+  padding: clamp(16px, 2.5vw, 48px) 0 64px;
   animation: now-enter 460ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .collection-backdrop {
-  position: absolute;
-  inset: -8%;
+  /* Fixed full-bleed: runs behind the rail and under the content as it scrolls,
+     fading into the page background past ~70vh. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 76vh;
   z-index: 0;
   background-size: cover;
-  background-position: center;
+  background-position: center 28%;
   background-color: #06080d;
-  transform: scale(1.16);
-  /* Blur the image element directly (not backdrop-filter) — TV browsers
-     render element filters far more smoothly than backdrop-filter, which
-     comes out blocky/banded on the VIDAA GPU. */
-  filter: blur(30px) saturate(1.2) brightness(0.56);
 }
 
 .collection-backdrop::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    105deg,
-    rgba(6, 8, 13, 0.74) 0%,
-    rgba(6, 8, 13, 0.42) 48%,
-    rgba(6, 8, 13, 0.7) 100%
-  );
+  background:
+    linear-gradient(180deg, rgba(6, 8, 13, 0.42) 0%, rgba(6, 8, 13, 0.62) 46%, rgba(6, 8, 13, 0.9) 78%, #080b10 100%),
+    linear-gradient(90deg, rgba(6, 8, 13, 0.85) 0%, rgba(6, 8, 13, 0.45) 38%, rgba(6, 8, 13, 0.12) 100%);
+}
+
+/* Subtle palette wash over the lower page so the whole view carries the
+   collection's colour, not just the billboard. */
+.collection-backdrop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 60vh;
+  background: linear-gradient(180deg, rgba(var(--coll-rgb), 0.1), rgba(8, 11, 16, 0) 80%);
 }
 
 .collection-layout {
@@ -2553,7 +2749,7 @@ body.is-phone-pair {
   object-fit: cover;
   border-radius: 10px;
   background: #111824;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.4);
 }
 
 .collection-head .eyebrow {
@@ -2585,7 +2781,8 @@ body.is-phone-pair {
 }
 
 .collection-play,
-.collection-shuffle {
+.collection-shuffle,
+.collection-save {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -2598,7 +2795,8 @@ body.is-phone-pair {
 }
 
 .collection-play svg,
-.collection-shuffle svg {
+.collection-shuffle svg,
+.collection-save svg {
   width: 22px;
   height: 22px;
 }
@@ -2609,9 +2807,12 @@ body.is-phone-pair {
   color: #07120a;
 }
 
-.collection-shuffle {
+.collection-shuffle,
+.collection-save {
   border: 2px solid var(--line);
-  background: rgba(12, 16, 24, 0.6);
+  /* Dark panel with a faint palette tint layered on top (fallback first). */
+  background: rgba(12, 16, 24, 0.78);
+  background: linear-gradient(0deg, rgba(var(--coll-rgb, 12, 16, 24), 0.16), rgba(var(--coll-rgb, 12, 16, 24), 0.16)) rgba(12, 16, 24, 0.78);
   color: #e8ecf1;
 }
 
@@ -2619,6 +2820,21 @@ body.is-phone-pair {
   border-color: var(--green);
   background: rgba(30, 215, 96, 0.16);
   color: #c8f7d8;
+}
+
+.collection-save.is-active {
+  border-color: var(--green);
+  background: rgba(30, 215, 96, 0.16);
+  color: #c8f7d8;
+}
+
+.collection-save.is-active svg {
+  fill: var(--green-soft);
+  stroke: var(--green-soft);
+}
+
+.collection-save.is-pending {
+  opacity: 0.6;
 }
 
 .collection-shuffle__state {
@@ -2739,7 +2955,7 @@ body.is-phone-pair {
 
 .collection-track__title {
   overflow: hidden;
-  font-size: 1.16rem;
+  font-size: 1.34rem; /* ~24px — TV body minimum */
   font-weight: 700;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -2748,15 +2964,17 @@ body.is-phone-pair {
 .collection-track__artist {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 1rem;
+  font-size: 1.16rem;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* Always visible — playlist rows (artwork index cell) included. */
 .collection-track__time {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
-  font-size: 1.02rem;
+  font-size: 1.16rem;
+  white-space: nowrap;
 }
 
 .collection-track.is-playing {
@@ -2984,8 +3202,8 @@ body.is-phone-pair {
   bottom: 0;
   display: flex;
   flex-direction: column;
-  width: min(520px, 92vw);
-  padding: 32px 32px 24px;
+  width: min(540px, 92vw);
+  padding: 32px var(--safe-x, 48px) 28px 32px;
   border-left: 1px solid var(--line);
   background: var(--panel-strong, #11161f);
   box-shadow: var(--elev-2);
@@ -3110,7 +3328,7 @@ body.is-phone-pair {
 
 .queue-row__title {
   overflow: hidden;
-  font-size: 1.1rem;
+  font-size: 1.22rem;
   font-weight: 700;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -3119,7 +3337,7 @@ body.is-phone-pair {
 .queue-row__artist {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 0.96rem;
+  font-size: 1.05rem;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -3266,7 +3484,8 @@ body.is-phone-pair {
    Never focusable, so it can't perturb spatial focus or ambient scroll. */
 .up-next {
   position: fixed;
-  left: clamp(20px, 3vw, 48px);
+  /* Clear the left nav rail except on ambient/now, where the rail is hidden. */
+  left: calc(var(--rail-w, 128px) + 12px);
   bottom: clamp(20px, 3vw, 48px);
   z-index: 40;
   display: flex;
@@ -3286,6 +3505,12 @@ body.is-phone-pair {
 
 .up-next[hidden] {
   display: none;
+}
+
+/* Ambient/Now hide the rail, so the card returns to the safe-area edge. */
+body[data-view="ambient"] .up-next,
+body[data-view="now"] .up-next {
+  left: clamp(20px, 3vw, 48px);
 }
 
 .up-next.is-visible {
@@ -3384,6 +3609,44 @@ body.has-pill .up-next {
   .up-next {
     transition: opacity 120ms linear !important;
     transform: none !important;
+  }
+
+  /* Decorative motion off globally: focus scale/translate, label slides, the
+     pulsing ring, EQ bars, loading shimmer. Functional opacity changes (dim
+     states, crossfades) stay but settle near-instantly. */
+  .focusable,
+  .card,
+  .device-card,
+  .nav-item__label,
+  .nav-rail__brand-label,
+  .nav-rail__scrim,
+  .refresh-btn,
+  .transport-btn,
+  .scene-seg,
+  .scene-btn,
+  .toast,
+  .ambient-controls {
+    transition-duration: 1ms !important;
+  }
+
+  .focusable:focus,
+  .card:focus,
+  .card.is-focused,
+  .device-card:focus {
+    transform: none !important;
+  }
+
+  .nav-item__label,
+  .nav-rail__brand-label {
+    transform: none !important;
+  }
+
+  .card--loading,
+  .collection-track__eq i,
+  .ambient-visualizer__art::after,
+  .exit-dialog__backdrop,
+  .exit-dialog__panel {
+    animation: none !important;
   }
 
   html { scroll-behavior: auto; }
