@@ -179,6 +179,8 @@ const state = {
   collection: null,
   collectionShuffle: false,
   collectionReturnView: "home",
+  artist: null, // artist-page state (id, name, image, topTracks, albums)
+  artistReturnView: "home",
   dataLoaded: false,
   dataLoading: false,
   queueItems: [], // last-fetched upcoming queue (from /me/player/queue)
@@ -294,6 +296,20 @@ const elements = {
   collectionShuffleBtn: document.querySelector("#collectionShuffleBtn"),
   collectionSaveBtn: document.querySelector("#collectionSaveBtn"),
   collectionTracks: document.querySelector("#collectionTracks"),
+  searchKeys: document.querySelector("#searchKeys"),
+  searchQueryText: document.querySelector("#searchQueryText"),
+  searchHint: document.querySelector("#searchHint"),
+  searchTracksShelf: document.querySelector("#searchTracksShelf"),
+  searchArtistsShelf: document.querySelector("#searchArtistsShelf"),
+  searchAlbumsShelf: document.querySelector("#searchAlbumsShelf"),
+  searchPlaylistsShelf: document.querySelector("#searchPlaylistsShelf"),
+  artistBackdrop: document.querySelector("#artistBackdrop"),
+  artistArt: document.querySelector("#artistArt"),
+  artistTitle: document.querySelector("#artistTitle"),
+  artistMeta: document.querySelector("#artistMeta"),
+  artistTopTracks: document.querySelector("#artistTopTracks"),
+  artistAlbumsShelf: document.querySelector("#artistAlbumsShelf"),
+  viewArtist: document.querySelector("#view-artist"),
   diagnostics: document.querySelector("#diagnostics"),
   toggleDebugView: document.querySelector("#toggleDebugView"),
   toggleDebugState: document.querySelector("#toggleDebugState"),
@@ -335,6 +351,7 @@ const actions = {
   toggleCollectionShuffle,
   toggleCollectionSaved,
   collectionBack,
+  artistBack,
   clearKeys,
   testStorage,
   testAudio,
@@ -405,6 +422,17 @@ function init() {
   // ambient control cluster undims while any of its controls is focused.
   wireFocusWithinClass(elements.navRail);
   wireFocusWithinClass(elements.ambientControls);
+
+  // On-screen search keyboard (Search view) is generated once at boot.
+  buildSearchKeyboard();
+  renderSearchQuery();
+
+  // Windowed collection rendering: extend the rendered row window as focus
+  // approaches its end (see renderMoreCollectionRows).
+  elements.collectionTracks?.addEventListener("focusin", handleCollectionTracksFocusIn);
+
+  // If the app loses key focus mid-hold we never get the keyup — stop repeating.
+  window.addEventListener("blur", clearKeyRepeat);
 
   elements.pairQr?.addEventListener("error", () => {
     elements.pairQr.hidden = true;
@@ -591,16 +619,56 @@ function scrollDiagnostics(direction) {
   if (!panel) return false;
   const step = Math.max(120, panel.clientHeight - 60);
   try {
-    panel.scrollBy({ top: direction === "down" ? step : -step, behavior: "smooth" });
+    panel.scrollBy({ top: direction === "down" ? step : -step, behavior: _repeatScrollInstant ? "auto" : "smooth" });
   } catch {
     panel.scrollTop += direction === "down" ? step : -step;
   }
   return true;
 }
 
+// --- W4: focusables memoization ---------------------------------------------
+// Resolving the focus pool walks the DOM (querySelectorAll + getComputedStyle +
+// getBoundingClientRect per element) and used to run on every arrow keypress —
+// expensive on the TV's CPU. Cache the resolved array and invalidate it from
+// every render/visibility mutation site (invalidateFocusables). The cache key
+// captures modal/view context so view switches and modal opens re-resolve on
+// their own; the isConnected sweep self-heals after any replaceChildren path
+// that slipped through without an explicit invalidate.
+let _focusablesCache = null;
+let _focusablesCacheKey = "";
+
+function invalidateFocusables() {
+  _focusablesCache = null;
+}
+
+function focusablesContextKey() {
+  return [
+    isExitDialogOpen() ? "exit" : "",
+    isTrackMenuOpen() ? "menu" : "",
+    isQueueDrawerOpen() ? "drawer" : "",
+    state.currentView,
+    isDiagnosticsOpen() ? "diag" : "",
+  ].join("|");
+}
+
+function activeFocusables() {
+  const key = focusablesContextKey();
+  if (_focusablesCache && _focusablesCacheKey === key) {
+    let intact = true;
+    for (const el of _focusablesCache) {
+      if (!el.isConnected) { intact = false; break; }
+    }
+    if (intact) return _focusablesCache;
+  }
+  const result = computeActiveFocusables();
+  _focusablesCache = result;
+  _focusablesCacheKey = key;
+  return result;
+}
+
 // Scope the focus pool to the chrome (nav) + the active view + the now-playing pill.
 // This stops "down"/"right" from teleporting into an off-screen view's controls.
-function activeFocusables() {
+function computeActiveFocusables() {
   // While the exit dialog is open it owns the focus pool — trap the remote on its
   // Cancel/Exit buttons so arrows can't escape to the (covered) view behind it.
   if (isExitDialogOpen()) {
@@ -693,6 +761,9 @@ function keepElementVisible(element) {
     document.body.scrollTop = 0;
     return;
   }
+  // During held-key repeats smooth scrolling piles up queued animations and the
+  // viewport lags behind focus — repeats scroll instantly instead.
+  const behavior = _repeatScrollInstant ? "auto" : "smooth";
   const rail = element.closest(".rail");
   if (rail) {
     const railRect = rail.getBoundingClientRect();
@@ -705,13 +776,13 @@ function keepElementVisible(element) {
     }
     if (nextLeft !== rail.scrollLeft) {
       try {
-        rail.scrollTo({ left: Math.max(0, nextLeft), behavior: "smooth" });
+        rail.scrollTo({ left: Math.max(0, nextLeft), behavior });
       } catch {
         rail.scrollLeft = Math.max(0, nextLeft);
       }
     }
     try {
-      rail.closest(".shelf")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+      rail.closest(".shelf")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior });
     } catch {
       rail.closest(".shelf")?.scrollIntoView();
     }
@@ -719,7 +790,7 @@ function keepElementVisible(element) {
   }
 
   try {
-    element.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    element.scrollIntoView({ block: "nearest", inline: "nearest", behavior });
   } catch {
     element.scrollIntoView();
   }
@@ -806,9 +877,151 @@ function isEditableTarget(node) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+// --- W4: key-repeat acceleration ---------------------------------------------
+// Holding a D-pad arrow (or ChannelUp/Down) keeps moving focus/scrolling with
+// mild acceleration: first repeat after ~350ms, then every ~120ms, dropping to
+// ~80ms after 8 repeats. Native auto-repeat keydowns (event.repeat, or repeated
+// same-key keydowns without an intervening keyup) are gated to that cadence; a
+// fallback timer covers TVs that deliver only a single keydown while held. The
+// timer is armed only once we've ever seen a keyup from this device — without
+// keyups we could never tell "released" from "held" and a single tap would
+// scroll forever.
+const KEY_REPEAT_FIRST_MS = 350;
+const KEY_REPEAT_MS = 120;
+const KEY_REPEAT_FAST_MS = 80;
+const KEY_REPEAT_FAST_AFTER = 8;
+const REPEATABLE_KEYS = new Set([
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ChannelUp", "ChannelDown",
+]);
+
+const keyRepeat = {
+  key: "",
+  count: 0, // repeats performed since the initial press
+  nextAt: 0, // earliest timestamp the next repeat may fire
+  timer: 0, // fallback timer handle
+  sawNativeRepeat: false,
+};
+let _keyupEverSeen = false;
+let _repeatScrollInstant = false; // keepElementVisible/pageScroll: behavior:auto during repeats
+
+function keyRepeatInterval(count) {
+  if (count <= 0) return KEY_REPEAT_FIRST_MS;
+  return count >= KEY_REPEAT_FAST_AFTER ? KEY_REPEAT_FAST_MS : KEY_REPEAT_MS;
+}
+
+function clearKeyRepeat() {
+  if (keyRepeat.timer) {
+    window.clearTimeout(keyRepeat.timer);
+    keyRepeat.timer = 0;
+  }
+  keyRepeat.key = "";
+  keyRepeat.count = 0;
+  keyRepeat.nextAt = 0;
+  keyRepeat.sawNativeRepeat = false;
+}
+
+function performKeyStep(normalized, isRepeat) {
+  _repeatScrollInstant = isRepeat;
+  try {
+    dispatchDirectionalKey(normalized);
+  } finally {
+    _repeatScrollInstant = false;
+  }
+}
+
+function scheduleKeyRepeatFallback() {
+  if (!_keyupEverSeen) return; // see header comment — no keyups means no timer
+  if (keyRepeat.timer) window.clearTimeout(keyRepeat.timer);
+  const delay = Math.max(0, keyRepeat.nextAt - Date.now());
+  keyRepeat.timer = window.setTimeout(() => {
+    keyRepeat.timer = 0;
+    if (!keyRepeat.key || keyRepeat.sawNativeRepeat) return; // native repeats took over
+    keyRepeat.count += 1;
+    keyRepeat.nextAt = Date.now() + keyRepeatInterval(keyRepeat.count);
+    performKeyStep(keyRepeat.key, true);
+    scheduleKeyRepeatFallback();
+  }, delay);
+}
+
+function handleRepeatableKey(normalized, event) {
+  const heldSameKey = keyRepeat.key === normalized;
+  // event.repeat is authoritative where supported; otherwise a same-key keydown
+  // with no intervening keyup counts as a repeat (only trustworthy on devices
+  // that do deliver keyups).
+  const isRepeat = Boolean(event.repeat) || (heldSameKey && _keyupEverSeen);
+  if (!isRepeat) {
+    clearKeyRepeat();
+    keyRepeat.key = normalized;
+    keyRepeat.nextAt = Date.now() + keyRepeatInterval(0);
+    performKeyStep(normalized, false);
+    scheduleKeyRepeatFallback();
+    return;
+  }
+  keyRepeat.sawNativeRepeat = true;
+  if (keyRepeat.timer) {
+    window.clearTimeout(keyRepeat.timer);
+    keyRepeat.timer = 0;
+  }
+  if (!heldSameKey) {
+    // Rolled onto a different key while another was held — restart on it.
+    keyRepeat.key = normalized;
+    keyRepeat.count = 0;
+    keyRepeat.nextAt = 0;
+  }
+  if (Date.now() < keyRepeat.nextAt) return; // throttle native repeats to our cadence
+  keyRepeat.count += 1;
+  keyRepeat.nextAt = Date.now() + keyRepeatInterval(keyRepeat.count);
+  performKeyStep(normalized, true);
+}
+
+// The actual per-press work for the repeatable keys, shared by the initial
+// press, native repeats, and the fallback timer.
+function dispatchDirectionalKey(normalized) {
+  switch (normalized) {
+    case "ArrowRight":
+      // Right on a focused track row opens its context menu (Enter still plays it).
+      if (openTrackMenuFromFocus()) return;
+      if (handleAmbientModeArrow("right")) return;
+      if (!moveRailFocus("right")) moveFocusDirectional("right");
+      return;
+    case "ArrowDown":
+      // When the queue drawer is open, let normal focus navigation flow through
+      // the focusable rows — focusElement → keepElementVisible scrolls them
+      // into view automatically, so we no longer need a dedicated scroll path.
+      if (isDiagnosticsOpen()) {
+        scrollDiagnostics("down");
+        return;
+      }
+      moveFocusDirectional("down");
+      return;
+    case "ArrowLeft":
+      if (handleAmbientModeArrow("left")) return;
+      if (!moveRailFocus("left")) moveFocusDirectional("left");
+      return;
+    case "ArrowUp":
+      if (isDiagnosticsOpen()) {
+        scrollDiagnostics("up");
+        return;
+      }
+      moveFocusDirectional("up");
+      return;
+    case "ChannelUp":
+      pageScroll(-1);
+      return;
+    case "ChannelDown":
+      pageScroll(1);
+      return;
+  }
+}
+
 function handleRemoteEvent(event) {
   const normalized = normalizeRemoteKey(event);
   logRemoteEvent(event, normalized);
+  if (event.type === "keyup") {
+    _keyupEverSeen = true;
+    if (keyRepeat.key && normalized === keyRepeat.key) clearKeyRepeat();
+    return;
+  }
   if (event.type !== "keydown") return;
 
   // When a text field is focused, let the browser handle keys natively. Otherwise
@@ -818,38 +1031,13 @@ function handleRemoteEvent(event) {
     return;
   }
 
+  if (REPEATABLE_KEYS.has(normalized)) {
+    event.preventDefault();
+    handleRepeatableKey(normalized, event);
+    return;
+  }
+
   switch (normalized) {
-    case "ArrowRight":
-      event.preventDefault();
-      // Right on a focused track row opens its context menu (Enter still plays it).
-      if (openTrackMenuFromFocus()) break;
-      if (handleAmbientModeArrow("right")) break;
-      if (!moveRailFocus("right")) moveFocusDirectional("right");
-      break;
-    case "ArrowDown":
-      event.preventDefault();
-      // When the queue drawer is open, let normal focus navigation flow through
-      // the focusable rows — focusElement → keepElementVisible scrolls them
-      // into view automatically, so we no longer need a dedicated scroll path.
-      if (isDiagnosticsOpen()) {
-        scrollDiagnostics("down");
-        break;
-      }
-      moveFocusDirectional("down");
-      break;
-    case "ArrowLeft":
-      event.preventDefault();
-      if (handleAmbientModeArrow("left")) break;
-      if (!moveRailFocus("left")) moveFocusDirectional("left");
-      break;
-    case "ArrowUp":
-      event.preventDefault();
-      if (isDiagnosticsOpen()) {
-        scrollDiagnostics("up");
-        break;
-      }
-      moveFocusDirectional("up");
-      break;
     case "Enter":
     case "Space":
       if (document.activeElement?.matches("button")) {
@@ -888,14 +1076,6 @@ function handleRemoteEvent(event) {
     case "VolumeMute":
       event.preventDefault();
       log("Volume mute key observed. Spotify Web Playback SDK does not expose mute directly.");
-      break;
-    case "ChannelUp":
-      event.preventDefault();
-      pageScroll(-1);
-      break;
-    case "ChannelDown":
-      event.preventDefault();
-      pageScroll(1);
       break;
   }
 }
@@ -951,8 +1131,11 @@ function normalizeRemoteKey(event) {
 
 function pageScroll(direction) {
   const distance = Math.round(window.innerHeight * 0.78) * direction;
-  window.scrollBy({ top: distance, behavior: "smooth" });
-  log(`Channel scroll ${direction > 0 ? "down" : "up"} by ${Math.abs(distance)}px.`);
+  window.scrollBy({ top: distance, behavior: _repeatScrollInstant ? "auto" : "smooth" });
+  // Held-key repeats would spam the log (and its server beacon) — log taps only.
+  if (!_repeatScrollInstant) {
+    log(`Channel scroll ${direction > 0 ? "down" : "up"} by ${Math.abs(distance)}px.`);
+  }
 }
 
 function logRemoteEvent(event, normalized) {
@@ -970,7 +1153,9 @@ function logRemoteEvent(event, normalized) {
   state.remoteEvents = state.remoteEvents.slice(-40);
   if (elements.keyReadout) elements.keyReadout.textContent = JSON.stringify(payload);
   if (elements.keyStatus) elements.keyStatus.textContent = `${normalized} (${event.type})`;
-  if (event.type === "keydown") {
+  // Native auto-repeats while a key is held would flood the log (and its server
+  // beacon) at the repeat cadence — log only the initial press.
+  if (event.type === "keydown" && !event.repeat) {
     log(`Remote key: ${JSON.stringify(payload)}`);
   }
 }
@@ -1092,6 +1277,7 @@ function goToSettings() {
 function toggleSignedOutHero(show) {
   if (elements.signedOutHero) elements.signedOutHero.hidden = !show;
   if (elements.homeShelves) elements.homeShelves.hidden = Boolean(show);
+  invalidateFocusables();
 }
 
 const HOME_SHELVES = [
@@ -1138,6 +1324,7 @@ function shelfPlaceholder(container, title, kind, message, withRetry) {
     rail.append(retry);
   }
   container.append(head, rail);
+  invalidateFocusables();
 }
 
 async function loadLibrary() {
@@ -1168,11 +1355,13 @@ async function loadDevices() {
   if (!elements.devicesGrid.children.length) {
     elements.devicesGrid.append(emptyState("No Spotify Connect devices found."));
   }
+  invalidateFocusables();
 }
 
 function renderShelf(container, title, items, type, { hideIfEmpty = false, eyebrow } = {}) {
   if (!container) return;
   container.replaceChildren();
+  invalidateFocusables();
   const visible = (items || []).filter(Boolean);
   // Discovery shelves collapse when empty so Home never shows a lonely
   // "Nothing to show yet" under a heading.
@@ -1222,6 +1411,8 @@ function eyebrowForType(type) {
       return "Albums";
     case "track":
       return "Tracks";
+    case "artist":
+      return "Artists";
     default:
       return "Library";
   }
@@ -1230,15 +1421,20 @@ function eyebrowForType(type) {
 function createMediaCard(item, type) {
   const button = document.createElement("button");
   button.className = "focusable card";
+  if (type === "artist") button.classList.add("card--artist");
   button.setAttribute("role", "listitem");
-  const image = getImage(item);
+  // ~300px variant covers the 232px card art; lazy + async decode keeps long
+  // shelves from front-loading dozens of decodes on the TV.
+  const image = getImage(item, 300);
   const subtitle = type === "playlist"
     ? `${item.tracks?.total || 0} tracks`
     : type === "album"
       ? `${item.album_type || "album"} - ${(item.artists || []).map((artist) => artist.name).join(", ")}`
+      : type === "artist"
+        ? "Artist"
     : (item.artists || []).map((artist) => artist.name).join(", ");
   button.innerHTML = `
-    <img src="${escapeAttribute(image)}" alt="">
+    <img src="${escapeAttribute(image)}" alt="" loading="lazy" decoding="async">
     <span class="card-title">${escapeHtml(item.name || "Untitled")}</span>
     <span class="card-subtitle">${escapeHtml(subtitle || type)}</span>
   `;
@@ -1246,6 +1442,10 @@ function createMediaCard(item, type) {
   // user can browse tracks and choose shuffle vs. sequential before playing.
   if (type === "album" || type === "playlist") {
     button.addEventListener("click", () => openCollection(item, type));
+  } else if (type === "artist") {
+    button.addEventListener("click", () => {
+      openArtist(item).catch((error) => logError("Open artist failed", error));
+    });
   } else {
     button.addEventListener("click", () => playItem(item, type));
   }
@@ -1291,6 +1491,13 @@ async function playItem(item, type) {
   await getCurrentPlayback();
 }
 
+// W4: bounded pagination + windowed rendering for big collections. The first
+// page paints immediately, the rest stream in the background; rows only enter
+// the DOM in chunks as focus approaches the end of what's rendered.
+const COLLECTION_MAX_TRACKS = 500;
+const COLLECTION_RENDER_CHUNK = 60;
+const COLLECTION_RENDER_LOOKAHEAD = 15; // rows of headroom before extending
+
 async function openCollection(item, type) {
   requireAccessToken();
   if (state.currentView !== "collection") {
@@ -1298,66 +1505,100 @@ async function openCollection(item, type) {
   }
   const totalKnown = type === "playlist" ? item.tracks?.total : item.total_tracks;
   const releaseDate = type === "album" ? (item.release_date || "") : "";
-  state.collection = {
+  const coll = {
     type,
     id: item.id,
     contextUri: item.uri,
     title: item.name || "Untitled",
-    image: getImage(item),
+    image: getImage(item, 640), // billboard/backdrop hero wants the large variant
     byline: type === "playlist"
       ? (item.owner?.display_name ? `By ${item.owner.display_name}` : "Playlist")
       : (item.artists || []).map((artist) => artist.name).join(", "),
     year: releaseDate ? releaseDate.slice(0, 4) : "",
     totalKnown: Number.isFinite(totalKnown) ? totalKnown : null,
     tracks: [],
+    renderedCount: 0,
+    loadedAll: false,
+    truncated: false,
     loading: true,
     error: "",
     saved: null, // null = unknown until the contains-check resolves
     savedPending: false,
     paletteUrl: "",
   };
+  state.collection = coll;
   setView("collection");
   renderCollection();
   focusElement(elements.collectionShuffleBtn);
-  refreshCollectionSaved(state.collection);
-  try {
-    state.collection.tracks = await fetchCollectionTracks(item, type);
-  } catch (error) {
-    state.collection.error = error?.message || "Couldn't load tracks.";
-    logError("Collection load failed", error);
-  } finally {
-    state.collection.loading = false;
-    renderCollection();
-  }
+  refreshCollectionSaved(coll);
+  await loadCollectionTracks(item, type, coll);
 }
 
-async function fetchCollectionTracks(item, type) {
+// Streams the track pages into coll.tracks: page 1 renders immediately, later
+// pages append in the background. Every await is followed by a staleness check
+// so leaving for another collection cancels the rest of the work.
+async function loadCollectionTracks(item, type, coll) {
   // Spotify caps per-page at 50; large playlists/albums need pagination via the
   // `next` URL so we don't silently truncate. The next URL is fully-qualified;
   // strip the host since spotifyApiFetch prepends it.
-  const startPath = type === "album"
+  let path = type === "album"
     ? `/v1/albums/${item.id}/tracks?limit=50`
     : `/v1/playlists/${item.id}/items?limit=50`;
   const getTrack = type === "album"
     ? (entry) => entry
     : (entry) => entry.track ?? entry.item;
-  const out = [];
-  let path = startPath;
-  const MAX_PAGES = 30; // 30 × 50 = 1500 tracks ceiling
-  for (let page = 0; page < MAX_PAGES && path; page++) {
-    const data = await spotifyApiJson(path);
-    if (!data) break;
-    for (const entry of data.items || []) {
-      const track = getTrack(entry);
-      if (!track || !track.uri) continue;
-      // Skip explicitly-unavailable and local-only tracks — they error if we
-      // try to play them and pad the duration total with garbage.
-      if (track.is_playable === false || track.is_local === true) continue;
-      out.push(normalizeCollectionTrack(track));
+  let firstPage = true;
+  try {
+    while (path && coll.tracks.length < COLLECTION_MAX_TRACKS) {
+      const data = await spotifyApiJson(path);
+      if (state.collection !== coll) return; // user opened something else
+      if (!data) break;
+      for (const entry of data.items || []) {
+        const track = getTrack(entry);
+        if (!track || !track.uri) continue;
+        // Skip explicitly-unavailable and local-only tracks — they error if we
+        // try to play them and pad the duration total with garbage.
+        if (track.is_playable === false || track.is_local === true) continue;
+        coll.tracks.push(normalizeCollectionTrack(track));
+        if (coll.tracks.length >= COLLECTION_MAX_TRACKS) break;
+      }
+      path = data.next ? data.next.replace(/^https:\/\/api\.spotify\.com/, "") : "";
+      if (firstPage) {
+        firstPage = false;
+        coll.loading = false;
+        renderCollection(); // paint page 1 right away; the rest streams in
+      } else {
+        renderCollectionMeta();
+        // If focus is parked near the end of the window (user outran the
+        // fetch), extend it now — Down needs the next row to exist.
+        maybeExtendCollectionWindow();
+      }
     }
-    path = data.next ? data.next.replace(/^https:\/\/api\.spotify\.com/, "") : "";
+    if (path && coll.tracks.length >= COLLECTION_MAX_TRACKS) coll.truncated = true;
+    coll.loadedAll = true;
+  } catch (error) {
+    if (state.collection !== coll) return;
+    coll.error = error?.message || "Couldn't load tracks.";
+    logError("Collection load failed", error);
+  } finally {
+    if (state.collection === coll) {
+      coll.loading = false;
+      if (firstPage || !coll.tracks.length) {
+        // Nothing rendered yet (page-1 failure or genuinely empty collection).
+        renderCollection();
+      } else {
+        // Rows are already on screen — never blow them away, even if a later
+        // page failed; just settle the header and the end-of-list note.
+        if (coll.error) {
+          showToast("Couldn't load the rest of this collection.", "warn");
+          coll.error = "";
+        }
+        renderCollectionMeta();
+        updateCollectionEndNote();
+        maybeExtendCollectionWindow();
+      }
+    }
   }
-  return out;
 }
 
 function normalizeCollectionTrack(track) {
@@ -1404,20 +1645,14 @@ function renderCollection() {
     elements.collectionKind.textContent = coll.type === "playlist" ? "Playlist" : "Album";
   }
   if (elements.collectionTitle) elements.collectionTitle.textContent = coll.title;
-  if (elements.collectionMeta) {
-    const count = coll.tracks.length || coll.totalKnown || 0;
-    const countText = count ? `${count} song${count === 1 ? "" : "s"}` : "";
-    const totalMs = coll.tracks.reduce((sum, track) => sum + (track.duration || 0), 0);
-    const durationText = totalMs ? formatTotalDuration(totalMs) : "";
-    elements.collectionMeta.textContent = [coll.byline, coll.year, countText, durationText]
-      .filter(Boolean)
-      .join(" · ");
-  }
+  renderCollectionMeta();
   updateCollectionShuffleBtn();
   renderCollectionSaveBtn();
 
   const list = elements.collectionTracks;
   list.replaceChildren();
+  coll.renderedCount = 0;
+  invalidateFocusables();
 
   if (coll.loading) {
     const note = document.createElement("p");
@@ -1441,49 +1676,134 @@ function renderCollection() {
     return;
   }
 
-  coll.tracks.forEach((track, index) => {
-    const row = document.createElement("button");
-    row.className = "focusable collection-track";
-    row.dataset.uri = track.uri;
-    row.dataset.index = index;
-    // Playlists carry per-track art; albums share one cover, so show the track number.
-    const hasArt = Boolean(track.image);
-    const indexCell = hasArt
-      ? `<span class="collection-track__index collection-track__index--art" style="background-image:url('${escapeHtml(track.image)}')">
-           <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
-         </span>`
-      : `<span class="collection-track__index">
-           <span class="collection-track__num">${index + 1}</span>
-           <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
-         </span>`;
-    const subtitle = [track.artist, track.album].filter(Boolean).join(" · ");
-    row.innerHTML = `
-      ${indexCell}
-      <span class="collection-track__body">
-        <span class="collection-track__title">${escapeHtml(track.name)}</span>
-        <span class="collection-track__artist">${escapeHtml(subtitle)}</span>
-      </span>
-      <span class="collection-track__time">${formatDuration(track.duration)}</span>
-    `;
-    row.addEventListener("click", () => {
-      startCollectionPlayback({ offsetUri: track.uri }).catch((error) =>
-        logError("Collection track play failed", error)
-      );
-    });
-    list.append(row);
+  renderMoreCollectionRows();
+}
+
+// Header line: byline · year · count · duration. While pages stream in the
+// count tracks what's known; the duration settles once all pages have loaded.
+function renderCollectionMeta() {
+  const coll = state.collection;
+  if (!coll || !elements.collectionMeta) return;
+  const count = (coll.loadedAll && !coll.truncated)
+    ? coll.tracks.length
+    : (coll.totalKnown || coll.tracks.length || 0);
+  const countText = count ? `${count} song${count === 1 ? "" : "s"}` : "";
+  const totalMs = coll.tracks.reduce((sum, track) => sum + (track.duration || 0), 0);
+  const durationText = coll.loadedAll && totalMs
+    ? formatTotalDuration(totalMs) + (coll.truncated ? "+" : "")
+    : "";
+  const truncatedText = coll.truncated ? `showing first ${coll.tracks.length}` : "";
+  elements.collectionMeta.textContent = [coll.byline, coll.year, countText, truncatedText, durationText]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildCollectionTrackRow(track, index) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "focusable collection-track";
+  row.dataset.uri = track.uri;
+  row.dataset.index = index;
+  // Playlists carry per-track art; albums share one cover, so show the track number.
+  const hasArt = Boolean(track.image);
+  const indexCell = hasArt
+    ? `<span class="collection-track__index collection-track__index--art" style="background-image:url('${escapeHtml(track.image)}')">
+         <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+       </span>`
+    : `<span class="collection-track__index">
+         <span class="collection-track__num">${index + 1}</span>
+         <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+       </span>`;
+  const subtitle = [track.artist, track.album].filter(Boolean).join(" · ");
+  row.innerHTML = `
+    ${indexCell}
+    <span class="collection-track__body">
+      <span class="collection-track__title">${escapeHtml(track.name)}</span>
+      <span class="collection-track__artist">${escapeHtml(subtitle)}</span>
+    </span>
+    <span class="collection-track__time">${formatDuration(track.duration)}</span>
+  `;
+  row.addEventListener("click", () => {
+    startCollectionPlayback({ offsetUri: track.uri }).catch((error) =>
+      logError("Collection track play failed", error)
+    );
   });
+  return row;
+}
+
+// Appends the next window of rows. Called from renderCollection (first chunk)
+// and whenever focus nears the end of the rendered window.
+function renderMoreCollectionRows(chunk = COLLECTION_RENDER_CHUNK) {
+  const coll = state.collection;
+  const list = elements.collectionTracks;
+  if (!coll || !list) return;
+  const end = Math.min(coll.tracks.length, coll.renderedCount + chunk);
+  if (end <= coll.renderedCount) {
+    updateCollectionEndNote();
+    return;
+  }
+  // The end note must stay after the last row — drop it before appending.
+  list.querySelector(".collection-end-note")?.remove();
+  const frag = document.createDocumentFragment();
+  for (let i = coll.renderedCount; i < end; i++) {
+    frag.append(buildCollectionTrackRow(coll.tracks[i], i));
+  }
+  coll.renderedCount = end;
+  list.append(frag);
+  updateCollectionEndNote();
+  invalidateFocusables();
   renderCollectionPlayingState();
 }
 
+function updateCollectionEndNote() {
+  const coll = state.collection;
+  const list = elements.collectionTracks;
+  if (!coll || !list) return;
+  const show = coll.loadedAll && coll.truncated && coll.renderedCount >= coll.tracks.length;
+  let note = list.querySelector(".collection-end-note");
+  if (!show) {
+    note?.remove();
+    return;
+  }
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "collection-note collection-end-note";
+  }
+  note.textContent = `Showing the first ${coll.tracks.length} tracks.`;
+  list.append(note);
+}
+
+// Extend the rendered window when the focused row runs out of headroom — this
+// is what keeps Down working all the way through a 500-track playlist without
+// 500 rows in the DOM up front.
+function maybeExtendCollectionWindow() {
+  const coll = state.collection;
+  if (!coll || !elements.collectionTracks) return;
+  const active = document.activeElement;
+  const row = active instanceof HTMLElement ? active.closest(".collection-track") : null;
+  if (!row || !elements.collectionTracks.contains(row)) return;
+  const index = Number(row.dataset.index);
+  if (!Number.isFinite(index)) return;
+  if (index >= coll.renderedCount - COLLECTION_RENDER_LOOKAHEAD) {
+    renderMoreCollectionRows();
+  }
+}
+
+function handleCollectionTracksFocusIn() {
+  maybeExtendCollectionWindow();
+}
+
 function renderCollectionPlayingState() {
-  if (!elements.collectionTracks) return;
   const now = state.nowPlaying;
-  const rows = elements.collectionTracks.querySelectorAll(".collection-track");
-  rows.forEach((row) => {
-    const match = Boolean(now) && now.uri && row.dataset.uri === now.uri;
-    row.classList.toggle("is-playing", match);
-    row.classList.toggle("is-paused", match && Boolean(now?.paused));
-  });
+  for (const container of [elements.collectionTracks, elements.artistTopTracks]) {
+    if (!container) continue;
+    const rows = container.querySelectorAll(".collection-track");
+    rows.forEach((row) => {
+      const match = Boolean(now) && now.uri && row.dataset.uri === now.uri;
+      row.classList.toggle("is-playing", match);
+      row.classList.toggle("is-paused", match && Boolean(now?.paused));
+    });
+  }
 }
 
 function updateCollectionShuffleBtn() {
@@ -1631,6 +1951,287 @@ function collectionBack() {
   setView(state.collectionReturnView || "home");
 }
 
+/* ------------------------------------------------------------------ *
+ * W4 Artist page: hero + top tracks + albums shelf. Mirrors the
+ * collection-view pattern (sibling view, return-view memory, palette tint).
+ * ------------------------------------------------------------------ */
+
+function artistBack() {
+  setView(state.artistReturnView || "home");
+}
+
+function formatFollowers(count) {
+  if (count >= 1e6) return `${(count / 1e6).toFixed(count >= 1e7 ? 0 : 1)}M`;
+  if (count >= 1e3) return `${Math.round(count / 1e3)}K`;
+  return String(count);
+}
+
+// Accepts a full artist object (search card) or a bare artist id (track menu).
+async function openArtist(itemOrId) {
+  requireAccessToken();
+  const seed = itemOrId && typeof itemOrId === "object" ? itemOrId : null;
+  const id = typeof itemOrId === "string" ? itemOrId : seed?.id || spotifyUriId(seed?.uri);
+  if (!id) {
+    showToast("Couldn't open that artist.", "error");
+    return;
+  }
+  if (state.currentView !== "artist") {
+    state.artistReturnView = state.currentView;
+  }
+  const artist = {
+    id,
+    name: seed?.name || "",
+    image: seed ? pickImageUrl(seed, 640) : "",
+    meta: "",
+    topTracks: [],
+    albums: [],
+    loading: true,
+    error: "",
+    paletteUrl: "",
+  };
+  state.artist = artist;
+  setView("artist");
+  renderArtist();
+
+  const results = await Promise.allSettled([
+    spotifyApiJson(`/v1/artists/${encodeURIComponent(id)}`),
+    spotifyApiJson(`/v1/artists/${encodeURIComponent(id)}/top-tracks?market=from_token`),
+    spotifyApiJson(`/v1/artists/${encodeURIComponent(id)}/albums?include_groups=album,single&limit=20`),
+  ]);
+  if (state.artist !== artist) return; // user moved on while loading
+  const [profile, top, albums] = results;
+  if (profile.status === "fulfilled" && profile.value) {
+    artist.name = profile.value.name || artist.name;
+    artist.image = pickImageUrl(profile.value, 640) || artist.image;
+    const followers = profile.value.followers?.total;
+    const genres = (profile.value.genres || []).slice(0, 3).join(" · ");
+    artist.meta = [genres, Number.isFinite(followers) ? `${formatFollowers(followers)} followers` : ""]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (top.status === "fulfilled") {
+    artist.topTracks = (top.value?.tracks || []).filter((track) => track && track.uri);
+  }
+  if (albums.status === "fulfilled") {
+    artist.albums = (albums.value?.items || []).filter(Boolean);
+  }
+  if (results.every((result) => result.status === "rejected")) {
+    artist.error = profile.reason?.message || "Couldn't load this artist.";
+    logError("Artist load failed", profile.reason);
+  }
+  artist.loading = false;
+  renderArtist();
+}
+
+function renderArtist() {
+  const artist = state.artist;
+  const list = elements.artistTopTracks;
+  if (!artist || !list) return;
+
+  if (elements.artistBackdrop) {
+    elements.artistBackdrop.style.backgroundImage = artist.image ? `url("${artist.image}")` : "";
+  }
+  if (artist.image && artist.image !== artist.paletteUrl) {
+    artist.paletteUrl = artist.image;
+    extractPalette(artist.image).then((palette) => {
+      if (state.artist !== artist) return;
+      applyPaletteChannels(elements.viewArtist, "--coll-rgb", palette);
+    }).catch(() => {});
+  }
+  if (elements.artistArt) {
+    if (artist.image) elements.artistArt.src = artist.image;
+    else elements.artistArt.removeAttribute("src");
+  }
+  if (elements.artistTitle) elements.artistTitle.textContent = artist.name || "Artist";
+  if (elements.artistMeta) elements.artistMeta.textContent = artist.meta || "";
+
+  list.replaceChildren();
+  invalidateFocusables();
+  if (artist.loading) {
+    const note = document.createElement("p");
+    note.className = "collection-note";
+    note.textContent = "Loading top tracks…";
+    list.append(note);
+  } else if (artist.error) {
+    const note = document.createElement("p");
+    note.className = "collection-note collection-note--error";
+    note.textContent = artist.error;
+    list.append(note);
+  } else if (!artist.topTracks.length) {
+    const note = document.createElement("p");
+    note.className = "collection-note";
+    note.textContent = "No top tracks available.";
+    list.append(note);
+  } else {
+    artist.topTracks.forEach((track, index) => list.append(buildArtistTrackRow(track, index)));
+  }
+
+  renderShelf(elements.artistAlbumsShelf, "Albums & Singles", artist.albums, "album", {
+    hideIfEmpty: true,
+  });
+  renderCollectionPlayingState();
+}
+
+// Top-track rows reuse the collection-track styling and expose the standard
+// data-track-* dataset so Right opens the existing context menu (tile path).
+function buildArtistTrackRow(track, index) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "focusable collection-track";
+  row.dataset.uri = track.uri;
+  const image = pickImageUrl(track, 96);
+  row.dataset.trackUri = track.uri;
+  row.dataset.trackId = track.id || "";
+  row.dataset.trackName = track.name || "";
+  row.dataset.trackArtist = (track.artists || []).map((a) => a.name).join(", ");
+  row.dataset.trackImage = image || "";
+  row.dataset.albumUri = track.album?.uri || "";
+  row.dataset.albumId = track.album?.id || "";
+  row.dataset.albumName = track.album?.name || "";
+  row.dataset.artistIds = (track.artists || []).map((a) => a.id).filter(Boolean).join(",");
+  const indexCell = image
+    ? `<span class="collection-track__index collection-track__index--art" style="background-image:url('${escapeHtml(image)}')">
+         <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+       </span>`
+    : `<span class="collection-track__index">
+         <span class="collection-track__num">${index + 1}</span>
+         <span class="collection-track__eq" aria-hidden="true"><i></i><i></i><i></i></span>
+       </span>`;
+  row.innerHTML = `
+    ${indexCell}
+    <span class="collection-track__body">
+      <span class="collection-track__title">${escapeHtml(track.name || "Untitled")}</span>
+      <span class="collection-track__artist">${escapeHtml(track.album?.name || "")}</span>
+    </span>
+    <span class="collection-track__time">${formatDuration(track.duration_ms)}</span>
+  `;
+  row.addEventListener("click", () => {
+    playItem(track, "track").catch((error) => logError("Top track play failed", error));
+  });
+  return row;
+}
+
+/* ------------------------------------------------------------------ *
+ * W4 Search view: on-screen A–Z 0–9 grid keyboard (spatial-nav friendly),
+ * debounced /v1/search, results rendered as the standard shelves. Nothing
+ * is persisted.
+ * ------------------------------------------------------------------ */
+
+const SEARCH_DEBOUNCE_MS = 600;
+const SEARCH_QUERY_MAX = 40;
+const SEARCH_DEFAULT_HINT = "Type with the on-screen keys to search Spotify.";
+
+let _searchQuery = "";
+let _searchTimer = 0;
+let _searchSeq = 0; // stale-response guard
+
+function buildSearchKeyboard() {
+  const wrap = elements.searchKeys;
+  if (!wrap || wrap.children.length) return;
+  const frag = document.createDocumentFragment();
+  for (const ch of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") {
+    frag.append(searchKeyButton(ch, ch));
+  }
+  frag.append(searchKeyButton("Space", "space", "search-key--wide"));
+  frag.append(searchKeyButton("Delete", "del", "search-key--wide"));
+  frag.append(searchKeyButton("Clear", "clear", "search-key--wide"));
+  wrap.append(frag);
+}
+
+function searchKeyButton(label, key, extraClass) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `focusable search-key${extraClass ? " " + extraClass : ""}`;
+  btn.dataset.key = key;
+  btn.setAttribute("aria-label", key === "del" ? "Delete last character" : label);
+  btn.textContent = label;
+  btn.addEventListener("click", () => handleSearchKey(key));
+  return btn;
+}
+
+function handleSearchKey(key) {
+  if (key === "del") {
+    _searchQuery = _searchQuery.slice(0, -1);
+  } else if (key === "clear") {
+    _searchQuery = "";
+  } else if (key === "space") {
+    if (_searchQuery && !_searchQuery.endsWith(" ")) _searchQuery += " ";
+  } else if (_searchQuery.length < SEARCH_QUERY_MAX) {
+    _searchQuery += key;
+  }
+  renderSearchQuery();
+  scheduleSearch();
+}
+
+function renderSearchQuery() {
+  if (elements.searchQueryText) elements.searchQueryText.textContent = _searchQuery;
+}
+
+function setSearchHint(text) {
+  const hint = elements.searchHint;
+  if (!hint) return;
+  hint.hidden = !text;
+  hint.textContent = text || "";
+}
+
+function scheduleSearch() {
+  if (_searchTimer) window.clearTimeout(_searchTimer);
+  _searchSeq += 1; // anything in flight is stale now
+  const q = _searchQuery.trim();
+  if (!q) {
+    clearSearchResults();
+    return;
+  }
+  _searchTimer = window.setTimeout(() => {
+    _searchTimer = 0;
+    runSearch().catch((error) => logError("Search failed", error));
+  }, SEARCH_DEBOUNCE_MS);
+}
+
+function clearSearchResults() {
+  for (const key of ["searchTracksShelf", "searchArtistsShelf", "searchAlbumsShelf", "searchPlaylistsShelf"]) {
+    const shelf = elements[key];
+    if (shelf) {
+      shelf.replaceChildren();
+      shelf.hidden = true;
+    }
+  }
+  setSearchHint(SEARCH_DEFAULT_HINT);
+  invalidateFocusables();
+}
+
+async function runSearch() {
+  const q = _searchQuery.trim();
+  if (!q) return;
+  const seq = ++_searchSeq;
+  setSearchHint(`Searching for “${q}”…`);
+  try {
+    const data = await spotifyApiJson(
+      `/v1/search?q=${encodeURIComponent(q)}&type=track,album,artist,playlist&limit=12`
+    );
+    if (seq !== _searchSeq) return; // a newer query superseded this one
+    renderSearchResults(q, data);
+  } catch (error) {
+    if (seq !== _searchSeq) return;
+    logError("Search failed", error);
+    setSearchHint(`Couldn't search: ${error?.message || "unknown error"}`);
+  }
+}
+
+function renderSearchResults(q, data) {
+  const tracks = (data?.tracks?.items || []).filter(Boolean);
+  const artists = (data?.artists?.items || []).filter(Boolean);
+  const albums = (data?.albums?.items || []).filter(Boolean);
+  const playlists = (data?.playlists?.items || []).filter(Boolean);
+  renderShelf(elements.searchTracksShelf, "Tracks", tracks, "track", { hideIfEmpty: true });
+  renderShelf(elements.searchArtistsShelf, "Artists", artists, "artist", { hideIfEmpty: true });
+  renderShelf(elements.searchAlbumsShelf, "Albums", albums, "album", { hideIfEmpty: true });
+  renderShelf(elements.searchPlaylistsShelf, "Playlists", playlists, "playlist", { hideIfEmpty: true });
+  const total = tracks.length + artists.length + albums.length + playlists.length;
+  setSearchHint(total ? "" : `No results for “${q}”.`);
+  log(`Search "${q}": ${tracks.length} tracks, ${artists.length} artists, ${albums.length} albums, ${playlists.length} playlists.`);
+}
+
 function handleBack() {
   // Exit dialog is modal: Back dismisses it (cancel) rather than navigating.
   if (isExitDialogOpen()) {
@@ -1655,6 +2256,11 @@ function handleBack() {
   if (state.currentView === "collection") {
     collectionBack();
     log("Back: returned to collection source.");
+    return;
+  }
+  if (state.currentView === "artist") {
+    artistBack();
+    log("Back: returned from artist page.");
     return;
   }
   if (state.currentView === "now" || state.currentView === "ambient") {
@@ -1875,6 +2481,7 @@ function renderQueueDrawer(errorMessage) {
   const list = elements.queueList;
   if (!list) return;
   list.replaceChildren();
+  invalidateFocusables();
   if (errorMessage) {
     const note = document.createElement("p");
     note.className = "queue-drawer__note queue-drawer__note--error";
@@ -1981,8 +2588,11 @@ function openTrackMenuFromFocus() {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return false;
 
+  // Artist top-track rows reuse the .collection-track class for styling but
+  // carry data-track-* attrs — only rows inside the collection list resolve
+  // through state.collection (others fall through to the dataset path below).
   const collectionRow = active.closest(".collection-track");
-  if (collectionRow) {
+  if (collectionRow && elements.collectionTracks?.contains(collectionRow)) {
     const index = Number(collectionRow.dataset.index);
     const track = state.collection?.tracks?.[index];
     if (track && track.uri) {
@@ -2077,6 +2687,7 @@ function renderTrackMenuRoot() {
   const wrap = elements.trackMenuActions;
   if (!wrap) return;
   wrap.replaceChildren();
+  invalidateFocusables();
   const track = state.trackMenuTrack;
   if (!track) return;
   wrap.append(trackMenuButton("Add to Queue", () => {
@@ -2124,6 +2735,14 @@ function renderTrackMenuRoot() {
       };
       closeTrackMenu();
       openCollection(albumItem, "album").catch((error) => logError("Go to album failed", error));
+    }));
+  }
+
+  const menuArtistIds = (track.artistIds || []).filter(Boolean);
+  if (menuArtistIds.length) {
+    wrap.append(trackMenuButton("Go to Artist", () => {
+      closeTrackMenu();
+      openArtist(menuArtistIds[0]).catch((error) => logError("Go to artist failed", error));
     }));
   }
 
@@ -2185,6 +2804,7 @@ async function openPlaylistPicker(track) {
   const wrap = elements.trackMenuActions;
   if (!wrap) return;
   wrap.replaceChildren();
+  invalidateFocusables();
   const loading = document.createElement("p");
   loading.className = "track-menu__note";
   loading.textContent = "Loading your playlists…";
@@ -2196,6 +2816,7 @@ async function openPlaylistPicker(track) {
     logError("Load playlists failed", error);
     if (!isTrackMenuOpen()) return;
     wrap.replaceChildren();
+    invalidateFocusables();
     wrap.append(trackMenuButton("‹ Back", renderTrackMenuRoot, "track-menu__action--ghost"));
     const note = document.createElement("p");
     note.className = "track-menu__note track-menu__note--error";
@@ -2206,6 +2827,7 @@ async function openPlaylistPicker(track) {
   }
   if (!isTrackMenuOpen()) return;
   wrap.replaceChildren();
+  invalidateFocusables();
   wrap.append(trackMenuButton("‹ Back", renderTrackMenuRoot, "track-menu__action--ghost"));
   if (!playlists.length) {
     const note = document.createElement("p");
@@ -2545,6 +3167,7 @@ function setView(viewOrEvent) {
   for (const button of document.querySelectorAll(".nav-item")) {
     button.classList.toggle("is-active", button.dataset.view === nextView);
   }
+  invalidateFocusables();
   renderNpPill();
   if (nextView === "ambient") {
     startVisualizerIfNeeded();
@@ -3232,7 +3855,9 @@ function renderShellState() {
 function renderPairInfo() {
   const pairCode = getPairCode();
   const pairUrl = localStorage.getItem(storageKeys.pairLoginUrl) || "";
-  elements.pairCard.hidden = !pairCode || !pairUrl;
+  const hide = !pairCode || !pairUrl;
+  if (elements.pairCard.hidden !== hide) invalidateFocusables();
+  elements.pairCard.hidden = hide;
   if (!pairCode || !pairUrl) return;
   elements.pairCode.textContent = pairCode;
   elements.pairUrl.textContent = pairUrl;
@@ -3378,6 +4003,8 @@ function renderAmbient() {
   const stage = elements.ambientStage;
   if (!stage) return;
 
+  // Mode flips show/hide the Scene controls cluster — refresh the focus pool.
+  if (stage.dataset.mode !== mode) invalidateFocusables();
   stage.dataset.mode = mode;
   stage.classList.toggle("has-artwork", Boolean(image));
   stage.classList.toggle("is-playing", Boolean(now && !now.paused));
@@ -3561,6 +4188,9 @@ function renderNpPill() {
   const now = state.nowPlaying;
   const hideOnView = state.currentView === "ambient" || state.currentView === "now";
   const shouldShow = Boolean(now) && !hideOnView;
+  // The pill can (dis)appear without a view change (first track of the session)
+  // — drop the focusables cache only when its visibility actually flips.
+  if (pill.hidden !== !shouldShow) invalidateFocusables();
   pill.hidden = !shouldShow;
   document.body.classList.toggle("has-pill", shouldShow);
   if (!shouldShow) return;
@@ -3651,6 +4281,7 @@ function applyDebugVisibility() {
   if (elements.diagnostics) {
     elements.diagnostics.hidden = !state.debugVisible;
   }
+  invalidateFocusables();
   if (state.debugVisible) updateImgseqDiag();
   if (elements.toggleDebugView) {
     elements.toggleDebugView.setAttribute("aria-checked", state.debugVisible ? "true" : "false");
@@ -4823,8 +5454,28 @@ async function spotifyApiFetch(path, init) {
   });
 }
 
-function getImage(item) {
-  return item?.album?.images?.[0]?.url || item?.images?.[0]?.url || "/public/icons/spotify-logo.png";
+// Spotify `images[]` arrays come largest-first (typically 640/300/64). Pick the
+// smallest variant that still covers `minSize` CSS pixels so cards and rows
+// don't make the TV download + decode 640×640 art for a ~230px tile. Falls back
+// to the largest when sizes are missing (some playlist mosaics omit them).
+function pickImageUrl(item, minSize = 300) {
+  const images = item?.album?.images || item?.images || [];
+  let best = null;
+  let bestDim = Infinity;
+  for (const image of images) {
+    if (!image?.url) continue;
+    const dim = Math.max(image.width || 0, image.height || 0);
+    if (!dim) continue; // unsized entry — only usable via the images[0] fallback
+    if (dim >= minSize && dim < bestDim) {
+      best = image;
+      bestDim = dim;
+    }
+  }
+  return best?.url || images[0]?.url || "";
+}
+
+function getImage(item, minSize = 300) {
+  return pickImageUrl(item, minSize) || "/public/icons/spotify-logo.png";
 }
 
 function emptyState(message) {
