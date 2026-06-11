@@ -1,14 +1,22 @@
 rules_version = '2';
 
-// Scene frame JPGs are written by the convertSceneClip Cloud Function (which
-// runs with the Admin SDK and bypasses these rules). They're read directly
-// from the browser at storage.googleapis.com — read access is granted on the
-// uploaded objects via public:true, not through these rules — but we still
-// allow public read here for completeness. No client writes; uploads are
-// strictly server-side.
+// Scene assets (silent MP4s under scene-clips-v3, legacy frame JPGs) are
+// written by the Cloud Functions (which run with the Admin SDK and bypass
+// these rules). They're read directly from the browser at
+// storage.googleapis.com — read access is granted on the uploaded objects via
+// public:true, not through these rules — but we still allow public read here
+// for completeness. No client writes; uploads are strictly server-side.
 service firebase.storage {
   match /b/{bucket}/o {
     match /scene-frames/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /scene-frames-v2/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /scene-clips-v3/{allPaths=**} {
       allow read: if true;
       allow write: if false;
     }

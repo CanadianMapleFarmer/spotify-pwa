@@ -286,8 +286,12 @@
           </div>
 
           <div class="ambient-content">
-            <figure class="ambient-room-art" aria-hidden="true">
-              <img id="ambientRoomArt" alt="">
+            <!-- Two stacked art layers: track changes load into the hidden one,
+                 then data-art-active flips to crossfade (opacity only — TV-safe).
+                 The visible layers carry a slow Ken Burns zoom via CSS. -->
+            <figure class="ambient-room-art" id="ambientRoomArtFrame" aria-hidden="true" data-art-active="a">
+              <img class="ambient-room-art__img" id="ambientRoomArt" alt="">
+              <img class="ambient-room-art__img ambient-room-art__img--b" id="ambientRoomArtB" alt="">
             </figure>
             <div class="ambient-room-meta">
               <p class="eyebrow" id="ambientModeLabel">Room</p>
@@ -396,13 +400,13 @@
           <p class="eyebrow">Ambient</p>
           <h3 class="settings-section__title">Scene playback</h3>
           <button class="focusable settings-toggle" id="toggleSceneImgSeq" data-action="toggleSceneImageSequence" role="switch" aria-checked="false">
-            <span class="settings-toggle__label">Image-sequence Scene mode (recommended for TV)</span>
-            <span class="settings-toggle__hint">Use a pre-converted JPG sequence from Firebase instead of an MP4. This is the only path that lets Scene and Spotify both play on this TV. Requires the Cloud Function to be deployed (`firebase deploy --only functions,firestore,storage`) and the weekly cron to have run at least once.</span>
+            <span class="settings-toggle__label">Force image-sequence Scene mode (debug)</span>
+            <span class="settings-toggle__hint">Scene now plays silent MP4s from the curated library by default — no audio track means the TV firmware never pauses Spotify, and the hardware decoder does the work. Turn this on only to force the legacy JPG-sequence renderer (slow on the TV) for debugging.</span>
             <span class="settings-toggle__state" id="toggleSceneImgSeqState">Off</span>
           </button>
           <button class="focusable settings-toggle" id="toggleSceneStrip" data-action="toggleSceneStripAudio" role="switch" aria-checked="true">
             <span class="settings-toggle__label">Strip audio from MP4 (experimental, fallback)</span>
-            <span class="settings-toggle__hint">When image-sequence mode is off, demux Pexels MP4s in-browser so the video element never gets an audio track. Confirmed working on the TV but doesn't solve the firmware issue — only image-sequence mode does.</span>
+            <span class="settings-toggle__hint">Only affects the Pexels-direct fallback (used when the silent-clip library is empty): demux MP4s in-browser so the video element never gets an audio track. Silent library clips have no audio track to begin with and skip this entirely.</span>
             <span class="settings-toggle__state" id="toggleSceneStripState">On</span>
           </button>
         </div>

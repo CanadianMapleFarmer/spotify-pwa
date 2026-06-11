@@ -1,6 +1,6 @@
 {
   "name": "spotify-tv-functions",
-  "description": "Cloud Functions for the Spotify TV PWA — Scene clip → JPG sequence converter.",
+  "description": "Cloud Functions for the Spotify TV PWA — Scene clip → silent MP4 converter.",
   "private": true,
   "engines": {
     "node": "20"
