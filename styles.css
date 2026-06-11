@@ -809,23 +809,28 @@ body[data-view="ambient"] .app {
   background: #06080e;
 }
 
+/* Backdrop: the artwork itself, darkened by the scrim below — NOT blurred.
+   The old blur(44px) over a scaled layer was a GPU killer on the TV; a sharp
+   image under a heavy gradient scrim reads just as "ambient" and composites
+   for free. transform-only scale keeps edges off-screen during the zoom. */
 .ambient-room::before {
   content: "";
   position: absolute;
-  inset: -8%;
+  inset: 0;
   background-image: var(--ambient-art-url);
   background-size: cover;
   background-position: center;
-  filter: blur(44px) saturate(1.3) brightness(0.62);
-  transform: scale(1.12);
+  transform: scale(1.06);
 }
 
+/* Scrim does all the brightness/saturation work (no filters): a heavy diagonal
+   darkening so the sharp backdrop recedes behind the art card and text. */
 .ambient-room__scrim {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(100deg, rgba(0, 0, 0, 0.86) 0%, rgba(0, 0, 0, 0.58) 42%, rgba(0, 0, 0, 0.22) 72%, rgba(0, 0, 0, 0.5) 100%),
-    linear-gradient(0deg, rgba(0, 0, 0, 0.55), transparent 38%);
+    linear-gradient(100deg, rgba(4, 6, 11, 0.94) 0%, rgba(4, 6, 11, 0.8) 42%, rgba(4, 6, 11, 0.58) 72%, rgba(4, 6, 11, 0.74) 100%),
+    linear-gradient(0deg, rgba(4, 6, 11, 0.68), rgba(4, 6, 11, 0.22) 38%, rgba(4, 6, 11, 0.3) 100%);
 }
 
 .ambient-stage[data-mode="room"]:not(.has-artwork) .ambient-room::before {
@@ -847,6 +852,7 @@ body[data-view="ambient"] .app {
 }
 
 .ambient-room-art {
+  position: relative;
   margin: 0;
   flex-shrink: 0;
   width: 46vh;
@@ -861,15 +867,45 @@ body[data-view="ambient"] .app {
   transform: rotate(-1.4deg);
 }
 
-.ambient-room-art img {
+/* A/B art layers: data-art-active picks which one is visible; the other holds
+   (or is loading) the previous/next artwork. Opacity-only crossfade — TV-safe. */
+.ambient-room-art__img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  opacity: 0;
+  transition: opacity 600ms ease;
 }
 
-.ambient-stage:not(.has-artwork) .ambient-room-art img {
+.ambient-room-art[data-art-active="a"] .ambient-room-art__img:not(.ambient-room-art__img--b),
+.ambient-room-art[data-art-active="b"] .ambient-room-art__img--b {
+  opacity: 1;
+}
+
+.ambient-stage:not(.has-artwork) .ambient-room-art .ambient-room-art__img {
   opacity: 0;
+}
+
+/* Ken Burns: slow zoom on the art layers — transform only, and `alternate`
+   flips the direction every 30s cycle for free. Both layers animate in sync so
+   crossfades blend at identical scale. Scoped to room mode with artwork so the
+   animation never runs while the layer is hidden. */
+.ambient-stage[data-mode="room"].has-artwork .ambient-room-art__img {
+  animation: room-kenburns 30s ease-in-out infinite alternate;
+}
+
+@keyframes room-kenburns {
+  from { transform: scale(1); }
+  to { transform: scale(1.07); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-stage[data-mode="room"].has-artwork .ambient-room-art__img {
+    animation: none; /* keep the crossfade, skip the zoom */
+  }
 }
 
 /* === Screensaver mode === */
@@ -1062,6 +1098,7 @@ body.debug-on .scene-np__status {
 }
 
 .scene-np__status[data-state="idle"]   { background: rgba(255,255,255,0.08); color: rgba(232,236,241,0.85); }
+.scene-np__status[data-state="silent"] { background: rgba(30,215,96,0.18);   color: #6fe49a; }
 .scene-np__status[data-state="strip"]  { background: rgba(30,215,96,0.18);   color: #6fe49a; }
 .scene-np__status[data-state="plain"]  { background: rgba(255,200,60,0.18);  color: #ffd97a; }
 .scene-np__status[data-state="error"]  { background: rgba(255,80,80,0.18);   color: #ff9a9a; }
@@ -2328,6 +2365,17 @@ body.is-phone-pair {
 .ambient-screensaver[data-video="on"] .drift {
   opacity: 0;
   transition: opacity 800ms ease;
+  /* Faded out — stop animating transform so the layers cost the compositor nothing. */
+  animation-play-state: paused;
+}
+
+/* And drop the two extra layers outright while a clip plays: 2 blurred drift
+   layers is all the fade-out needs, and the freed compositor bandwidth goes to
+   the video. All four stay live only in the generative fallback
+   (data-video="off") where they ARE the content. */
+.ambient-screensaver[data-video="on"] .drift--c,
+.ambient-screensaver[data-video="on"] .drift--d {
+  display: none;
 }
 
 /* === Cinematic full-screen Now Playing === */

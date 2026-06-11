@@ -27,7 +27,9 @@ const storageKeys = {
   ambientMode: "spotify-pwa.ambient-mode",
   sceneCategory: "spotify-pwa.scene-category",
   sceneStripAudio: "spotify-pwa.scene-strip-audio",
-  sceneImageSequence: "spotify-pwa.scene-image-sequence",
+  // -v2: silent MP4 clips are now the primary Scene path, so devices that had
+  // image-sequence forced on (the old workaround) reset to the new default (off).
+  sceneImageSequence: "spotify-pwa.scene-image-sequence-v2",
 };
 
 // Image-sequence Scene library: read directly from Firestore (the scheduled
@@ -63,9 +65,20 @@ async function loadSceneLibrary() {
   const byCategory = { nature: [], skyline: [] };
   snap.forEach((doc) => {
     const d = doc.data();
-    if (byCategory[d.category] && Array.isArray(d.frames) && d.frames.length) {
-      byCategory[d.category].push({ id: d.id, frames: d.frames, fps: d.fps || 10 });
-    }
+    if (!byCategory[d.category]) return;
+    // Two doc shapes coexist: new silent-MP4 clips ({ kind: "video", videoUrl })
+    // and legacy image-sequence clips ({ frames: [...], fps }). Silent clips are
+    // preferred at playback time; frames are kept as fallback + debug path.
+    const hasVideo = d.kind === "video" && typeof d.videoUrl === "string" && d.videoUrl;
+    const hasFrames = Array.isArray(d.frames) && d.frames.length;
+    if (!hasVideo && !hasFrames) return;
+    byCategory[d.category].push({
+      id: d.id,
+      kind: hasVideo ? "video" : "frames",
+      videoUrl: hasVideo ? d.videoUrl : "",
+      frames: hasFrames ? d.frames : [],
+      fps: d.fps || 10,
+    });
   });
   _sceneLibraryCache = byCategory;
   return byCategory;
@@ -134,9 +147,9 @@ const state = {
   shuffle: false,
   repeat: "off",
   sceneCategory: "nature",
-  scenePlaylist: [], // in-memory list of Pexels mp4 URLs (shuffled)
+  scenePlaylist: [], // in-memory list of mp4 URLs (shuffled)
   scenePlaylistIndex: -1,
-  sceneSource: "local", // "pexels" | "local" — which scenery is currently feeding
+  sceneSource: "local", // "silent" | "pexels" | "local" — which scenery is currently feeding
   sceneActiveVideo: "a", // which A/B element is currently visible
   sceneToken: 0, // bumped on category change / mode exit to cancel stale async work
   sceneFetchInFlight: false,
@@ -225,6 +238,8 @@ const elements = {
   ambientTitle: document.querySelector("#ambientTitle"),
   ambientSubtitle: document.querySelector("#ambientSubtitle"),
   ambientRoomArt: document.querySelector("#ambientRoomArt"),
+  ambientRoomArtB: document.querySelector("#ambientRoomArtB"),
+  ambientRoomArtFrame: document.querySelector("#ambientRoomArtFrame"),
   sceneNp: document.querySelector("#sceneNp"),
   sceneNpArt: document.querySelector("#sceneNpArt"),
   sceneNpTitle: document.querySelector("#sceneNpTitle"),
@@ -2841,13 +2856,7 @@ function renderAmbient() {
     elements.ambientModeLabel.textContent = AMBIENT_MODE_LABELS[mode] || "Room Display";
   }
 
-  if (elements.ambientRoomArt) {
-    if (image) {
-      elements.ambientRoomArt.src = image;
-    } else {
-      elements.ambientRoomArt.removeAttribute("src");
-    }
-  }
+  updateAmbientRoomArt(image);
 
   if (elements.sceneNpTitle) {
     elements.sceneNpTitle.textContent = now?.title || "Nothing playing";
@@ -2878,6 +2887,50 @@ function renderAmbient() {
   for (const button of document.querySelectorAll("[data-action='setAmbientMode']")) {
     button.classList.toggle("is-active", button.dataset.mode === mode);
   }
+}
+
+// Room-mode artwork crossfade: two stacked <img> layers inside the art frame.
+// On a real artwork change we load the new art into the hidden layer first,
+// then flip data-art-active so CSS crossfades opacity (~600ms, transform/opacity
+// only — TV-safe). renderAmbient runs on every playback update, so the URL
+// guard keeps this a no-op unless the artwork actually changed.
+const _roomArtState = { url: "", active: "a" };
+function updateAmbientRoomArt(image) {
+  const frame = elements.ambientRoomArtFrame;
+  const a = elements.ambientRoomArt;
+  const b = elements.ambientRoomArtB;
+  if (!a) return;
+  if (!frame || !b) {
+    // No B layer in the DOM — fall back to the old direct swap.
+    if (image) a.src = image;
+    else a.removeAttribute("src");
+    return;
+  }
+  if (image === _roomArtState.url) return;
+  const hadArt = Boolean(_roomArtState.url);
+  _roomArtState.url = image;
+  if (!image) {
+    _roomArtState.active = "a";
+    frame.dataset.artActive = "a";
+    a.removeAttribute("src");
+    b.removeAttribute("src");
+    return;
+  }
+  if (!hadArt) {
+    // First artwork of the session: nothing to crossfade from, show directly.
+    const visible = _roomArtState.active === "b" ? b : a;
+    visible.src = image;
+    return;
+  }
+  const incomingKey = _roomArtState.active === "a" ? "b" : "a";
+  const incoming = incomingKey === "b" ? b : a;
+  incoming.onload = () => {
+    incoming.onload = null;
+    if (_roomArtState.url !== image) return; // a newer track superseded this load
+    _roomArtState.active = incomingKey;
+    frame.dataset.artActive = incomingKey;
+  };
+  incoming.src = image;
 }
 
 function refreshAmbientPalette(imageUrl) {
@@ -3052,9 +3105,11 @@ function handleAmbientModeArrow(direction) {
 // === Scene (screensaver) playback =============================================
 // Scene runs an A/B pair of <video> elements so the next clip can preload while
 // the current one plays; we crossfade by toggling .ambient-screensaver[data-active]
-// (opacity only — TV-safe). Sources come from Pexels when a key is present, else
-// the bundled AMBIENT_VIDEOS loops. We advance manually (no reliance on loop) so
-// playback is perpetual and Skip can jump instantly.
+// (opacity only — TV-safe). Sources, in priority order: silent MP4s from the
+// curated library (server-side audio strip → hardware decode, Spotify keeps
+// playing), legacy image-sequence clips, Pexels-direct (when a key is present),
+// then the bundled AMBIENT_VIDEOS loops. We advance manually (no reliance on
+// loop) so playback is perpetual and Skip can jump instantly.
 
 function hasPexelsKey() {
   try {
@@ -3117,16 +3172,18 @@ function silenceVideoEl(el) {
 // fall back to the plain <video src=url> path so Scene at least shows clips.
 
 // Visible status badge on the Scene now-playing card. State is one of:
-//   "idle"  — Scene not running
-//   "strip" — mp4box+MSE actively delivering an audio-stripped video stream
-//   "plain" — Strip path unavailable / off: playing original URL (conflict-prone)
-//   "error" — A clip failed to load entirely
+//   "idle"   — Scene not running
+//   "silent" — server-side silent MP4 (no audio track at all; the safe path)
+//   "strip"  — mp4box+MSE actively delivering an audio-stripped video stream
+//   "plain"  — Strip path unavailable / off: playing original URL (conflict-prone)
+//   "error"  — A clip failed to load entirely
 function setSceneStripStatus(state, detail) {
   const el = elements.sceneNpStatus;
   if (!el) return;
   el.dataset.state = state;
   const labels = {
     idle: "Scene: idle",
+    silent: `Silent clip${detail ? " · " + detail : ""}`,
     strip: `Audio stripped${detail ? " · " + detail : ""}`,
     plain: `Audio active${detail ? " · " + detail : ""}`,
     error: `Clip failed${detail ? " · " + detail : ""}`,
@@ -3408,9 +3465,11 @@ async function playImageSequence(clip, token) {
 }
 
 // Pick a random clip from the loaded library matching the user's category.
-function pickLibraryClip(library) {
+// kind narrows to "video" (silent MP4s) or "frames" (legacy image sequences).
+function pickLibraryClip(library, kind) {
   const cat = state.sceneCategory || "nature";
-  const list = library[cat] || [];
+  let list = library[cat] || [];
+  if (kind) list = list.filter((clip) => clip.kind === kind);
   if (!list.length) return null;
   return list[Math.floor(Math.random() * list.length)];
 }
@@ -3472,7 +3531,7 @@ async function startImageSequencePlayback() {
     const library = await loadSceneLibrary();
     if (state.sceneToken !== token) return;
     setImgseqDiag({ library: `nature:${(library.nature || []).length} skyline:${(library.skyline || []).length}` });
-    const clip = pickLibraryClip(library);
+    const clip = pickLibraryClip(library, "frames");
     if (!clip) {
       // Why not fall back to <video>: that engages the firmware decoder, which
       // pauses Spotify on this TV. Better to sit on the generative drift scene
@@ -3511,10 +3570,52 @@ async function startImageSequencePlayback() {
 }
 
 // Build (or rebuild) the in-memory playlist for the current category, then begin
-// playing the first clip. Pexels is attempted first; any failure falls back to
-// the bundled loops via beginLocalScene().
+// playing the first clip. Priority: silent MP4s from the curated library (no
+// audio track at all → the TV firmware audio pipeline never engages, so Spotify
+// keeps playing) → legacy image-sequence clips → Pexels-direct → bundled loops
+// → generative drift.
 function startScenePlayback() {
   const token = ++state.sceneToken;
+  startSilentScene(token);
+}
+
+// Try the curated silent-MP4 library first. Falls through to the legacy
+// image-sequence clips, then the Pexels-direct path, on empty/error.
+async function startSilentScene(token) {
+  try {
+    setSceneStripStatus("silent", "loading library…");
+    const library = await loadSceneLibrary();
+    if (token !== state.sceneToken) return;
+    const cat = state.sceneCategory || "nature";
+    const silentClips = (library[cat] || []).filter((clip) => clip.kind === "video" && clip.videoUrl);
+    if (silentClips.length) {
+      state.sceneSource = "silent";
+      state.scenePlaylist = shuffleArray(silentClips.map((clip) => clip.videoUrl));
+      state.scenePlaylistIndex = -1;
+      log(`Scene: loaded ${state.scenePlaylist.length} silent ${cat} clips from the library.`, "success");
+      advanceSceneClip(token);
+      return;
+    }
+    // No silent clips yet (library not refreshed since the backend change) —
+    // legacy image-sequence clips are the next-safest path for Spotify audio.
+    if ((library[cat] || []).some((clip) => clip.kind === "frames")) {
+      log("Scene: no silent clips in library; falling back to image-sequence clips.");
+      startImageSequencePlayback();
+      return;
+    }
+    log("Scene: library has no clips for this category; trying Pexels.", "warn");
+  } catch (err) {
+    if (token !== state.sceneToken) return;
+    log(`Scene: library load failed (${err?.message || err}); trying Pexels.`, "warn");
+  }
+  beginPexelsScene(token);
+}
+
+// Pexels-direct path (original clips, audio track intact — conflict-prone on
+// the TV, hence last before the bundled loops). Any failure falls back to the
+// bundled loops via beginLocalScene().
+function beginPexelsScene(token) {
+  if (token !== state.sceneToken) return;
   if (!hasPexelsKey()) {
     log("Scene: no Pexels key present; using bundled ambient loops.");
     beginLocalScene(token);
@@ -3564,9 +3665,12 @@ function advanceSceneClip(token, attempt = 0) {
   const playlist = state.scenePlaylist;
   if (!screensaver || !playlist.length) return;
 
-  // Exhausted the list (all failed this pass) — degrade.
+  // Exhausted the list (all failed this pass) — degrade along the priority chain.
   if (attempt >= playlist.length) {
-    if (state.sceneSource === "pexels") {
+    if (state.sceneSource === "silent") {
+      log("Scene: all silent library clips failed to load; trying Pexels.");
+      beginPexelsScene(token);
+    } else if (state.sceneSource === "pexels") {
       log("Scene: all Pexels clips failed to load; using bundled loops.");
       beginLocalScene(token);
     } else {
@@ -3623,8 +3727,9 @@ function advanceSceneClip(token, attempt = 0) {
   neutralizeVideoAudioWithWebAudio(next);
 
   // Path A: strip audio via mp4box + MSE for Pexels clips when the toggle is on.
-  // We only attempt this on remote (Pexels) clips — local loops are already
-  // audio-free, so they go through the plain <video src> path.
+  // We only attempt this on remote (Pexels) clips — silent library clips have no
+  // audio track at all and local loops are already audio-free, so both of those
+  // explicitly bypass mp4box/MSE and take the plain <video src> path below.
   const shouldStrip = state.sceneStripAudio && state.sceneSource === "pexels" && audioStripSupported();
   if (shouldStrip) {
     const tokenRef = { cancelled: false };
@@ -3654,8 +3759,13 @@ function advanceSceneClip(token, attempt = 0) {
     return;
   }
 
-  // Path B: plain URL — used for local loops and the strip-disabled state.
-  setSceneStripStatus("plain", state.sceneSource === "local" ? "local clip" : "strip off");
+  // Path B: plain URL — used for silent library clips (hardware decode, no audio
+  // track to contend over), local loops, and the strip-disabled state.
+  if (state.sceneSource === "silent") {
+    setSceneStripStatus("silent", "no audio track");
+  } else {
+    setSceneStripStatus("plain", state.sceneSource === "local" ? "local clip" : "strip off");
+  }
   next.src = url;
   next.load();
   const p = next.play();
