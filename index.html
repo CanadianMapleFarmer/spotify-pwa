@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&display=swap">
-    <link rel="stylesheet" href="/styles.css?v=43">
+    <link rel="stylesheet" href="/styles.css?v=44">
     <meta http-equiv="Cache-Control" content="no-store">
     <script>
       // Bootstraps the service worker independently of app.js. If the module
@@ -612,8 +612,8 @@
       </div>
     </aside>
 
-    <!-- Track context menu: opened by pressing Right on a focused Collection
-         track row (Enter still plays). Focus-trapped sheet; Back/Left closes.
+    <!-- Track context menu: opened by holding OK/Enter on a focused Collection
+         track row (a quick tap still plays). Focus-trapped sheet; Back/Left closes.
          Actions render dynamically (root step + playlist-picker step). -->
     <div class="track-menu" id="trackMenu" role="dialog" aria-modal="true" aria-label="Track options" hidden>
       <div class="track-menu__backdrop" data-action="closeTrackMenu" aria-hidden="true"></div>
@@ -652,6 +652,6 @@
          to MediaSource and skip the audio decoder entirely. Used to strip audio
          from Pexels scene clips so they coexist with Spotify on the TV. -->
     <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="/app.js?v=47" type="module"></script>
+    <script src="/app.js?v=48" type="module"></script>
   </body>
 </html>

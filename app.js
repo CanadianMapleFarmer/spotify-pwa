@@ -902,6 +902,50 @@ const keyRepeat = {
 let _keyupEverSeen = false;
 let _repeatScrollInstant = false; // keepElementVisible/pageScroll: behavior:auto during repeats
 
+// Long-press OK: holding Enter on a track row/tile opens its context menu; a
+// quick tap still clicks (plays). Right-arrow is pure spatial navigation again —
+// the old Right-opens-menu binding made track lists impossible to cross. The
+// hold is only armed once a keyup has been observed (same rule as key-repeat):
+// on a keydown-only device the timer would fire on every tap, so those fall
+// back to instant click.
+const ENTER_HOLD_MS = 650;
+const enterHold = {
+  el: null,
+  timer: 0,
+  fired: false, // menu opened — swallow the matching keyup
+};
+
+function clearEnterHold() {
+  if (enterHold.timer) window.clearTimeout(enterHold.timer);
+  if (enterHold.el) enterHold.el.classList.remove("is-holding");
+  enterHold.el = null;
+  enterHold.timer = 0;
+  enterHold.fired = false;
+}
+
+// Mirrors openTrackMenuFromFocus's two resolution paths: collection rows inside
+// the collection list, and any tile carrying data-track-uri (shelves, artist
+// rows, search results).
+function trackMenuCapable(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  const row = el.closest(".collection-track");
+  if (row && elements.collectionTracks?.contains(row)) return true;
+  const tile = el.closest("[data-track-uri]");
+  return Boolean(tile && tile.dataset.trackUri);
+}
+
+function beginEnterHold(el) {
+  clearEnterHold();
+  enterHold.el = el;
+  el.classList.add("is-holding");
+  enterHold.timer = window.setTimeout(() => {
+    enterHold.timer = 0;
+    enterHold.fired = true;
+    el.classList.remove("is-holding");
+    openTrackMenuFromFocus();
+  }, ENTER_HOLD_MS);
+}
+
 function keyRepeatInterval(count) {
   if (count <= 0) return KEY_REPEAT_FIRST_MS;
   return count >= KEY_REPEAT_FAST_AFTER ? KEY_REPEAT_FAST_MS : KEY_REPEAT_MS;
@@ -977,8 +1021,7 @@ function handleRepeatableKey(normalized, event) {
 function dispatchDirectionalKey(normalized) {
   switch (normalized) {
     case "ArrowRight":
-      // Right on a focused track row opens its context menu (Enter still plays it).
-      if (openTrackMenuFromFocus()) return;
+      // Pure navigation — the track context menu opens via long-press OK instead.
       if (handleAmbientModeArrow("right")) return;
       if (!moveRailFocus("right")) moveFocusDirectional("right");
       return;
@@ -1018,6 +1061,13 @@ function handleRemoteEvent(event) {
   if (event.type === "keyup") {
     _keyupEverSeen = true;
     if (keyRepeat.key && normalized === keyRepeat.key) clearKeyRepeat();
+    if (normalized === "Enter" && enterHold.el) {
+      const el = enterHold.el;
+      const fired = enterHold.fired;
+      clearEnterHold();
+      // Released before the hold threshold → it was a tap: click (play).
+      if (!fired && document.activeElement === el) el.click();
+    }
     return;
   }
   if (event.type !== "keydown") return;
@@ -1037,12 +1087,23 @@ function handleRemoteEvent(event) {
 
   switch (normalized) {
     case "Enter":
-    case "Space":
-      if (document.activeElement?.matches("button")) {
-        event.preventDefault();
-        document.activeElement.click();
+    case "Space": {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !active.matches("button")) break;
+      event.preventDefault();
+      // Auto-repeat never clicks: holding OK must not machine-gun the focused
+      // button (and once the hold menu opens, repeats would land on its first
+      // action). A hold in progress also swallows further keydowns until keyup.
+      if (event.repeat || enterHold.timer || enterHold.fired) return;
+      // Long-press OK on a track opens its context menu; the click happens on
+      // keyup instead so a tap still plays. Needs keyups (see enterHold note).
+      if (normalized === "Enter" && _keyupEverSeen && trackMenuCapable(active)) {
+        beginEnterHold(active);
+        return;
       }
+      active.click();
       break;
+    }
     case "Back":
       event.preventDefault();
       handleBack();
@@ -2421,15 +2482,19 @@ function buildQueueRow(track, position) {
   row.type = "button";
   row.className = "focusable queue-row";
   row.dataset.uri = track.uri || "";
-  const art = track.image ? `url("${escapeHtml(track.image)}")` : "none";
   row.innerHTML = `
-    <span class="queue-row__art" style="background-image:${art}"></span>
+    <span class="queue-row__art"></span>
     <span class="queue-row__body">
       <span class="queue-row__title">${escapeHtml(track.name)}</span>
       <span class="queue-row__artist">${escapeHtml(track.artist)}</span>
     </span>
     <span class="queue-row__pos">${position}</span>
   `;
+  // Set via the style API: inlining url("…") inside a double-quoted style
+  // attribute terminates the attribute at the inner quotes — art never rendered.
+  if (track.image) {
+    row.querySelector(".queue-row__art").style.backgroundImage = `url("${track.image}")`;
+  }
   row.addEventListener("click", () => {
     playQueueTrack(track).catch((error) => logError("Play from queue failed", error));
   });
@@ -2493,15 +2558,17 @@ function renderQueueDrawer(errorMessage) {
     list.append(queueSectionHead("Now playing"));
     const nowRow = document.createElement("div");
     nowRow.className = "queue-row queue-row--now";
-    const art = now.image ? `url("${escapeHtml(now.image)}")` : "none";
     nowRow.innerHTML = `
-      <span class="queue-row__art" style="background-image:${art}"></span>
+      <span class="queue-row__art"></span>
       <span class="queue-row__body">
         <span class="queue-row__title">${escapeHtml(now.title)}</span>
         <span class="queue-row__artist">${escapeHtml(now.artist)}</span>
       </span>
       <span class="queue-row__pos">${now.paused ? "Paused" : "Playing"}</span>
     `;
+    if (now.image) {
+      nowRow.querySelector(".queue-row__art").style.backgroundImage = `url("${now.image}")`;
+    }
     list.append(nowRow);
   }
 
@@ -2509,7 +2576,7 @@ function renderQueueDrawer(errorMessage) {
   if (!items.length) {
     const note = document.createElement("p");
     note.className = "queue-drawer__note";
-    note.textContent = "Nothing up next. Spotify's queue is append-only — press Right on any track and choose Add to Queue, or leave Autoplay on to keep the music going.";
+    note.textContent = "Nothing up next. Spotify's queue is append-only — hold OK on any track and choose Add to Queue, or leave Autoplay on to keep the music going.";
     list.append(note);
     return;
   }

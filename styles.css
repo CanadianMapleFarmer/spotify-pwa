@@ -137,10 +137,20 @@ input {
 }
 
 /* Scroll containers and full-width sheets shouldn't scale — the ring + fill is
-   plenty, and scaling a scrollable region jitters its content on the TV. */
+   plenty, and scaling a scrollable region jitters its content on the TV. Queue
+   rows live inside the drawer's scrollport, where a scaled edge gets clipped. */
 .log.focusable:focus,
-.settings-toggle.focusable:focus {
+.settings-toggle.focusable:focus,
+.queue-row.focusable:focus {
   transform: none;
+}
+
+/* Long-press OK in progress: the fill deepens so the hold reads as "charging"
+   before the track menu opens. Box-shadow only — no layout, no transform. */
+.focusable.is-holding {
+  box-shadow:
+    0 0 0 6px rgba(30, 215, 96, 0.32),
+    inset 0 0 0 999px rgba(30, 215, 96, 0.18);
 }
 
 .focusable:focus:not(:focus-visible) {
@@ -3207,9 +3217,14 @@ body.is-phone-pair {
 .queue-drawer__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   overflow-y: auto;
   flex: 1;
+  /* The scrollport clips horizontally (overflow-y:auto forces it), so bleed the
+     list 10px past the rows on both sides — the focus ring (3px outline + 3px
+     offset) now lives inside the scrollport instead of being cut off. */
+  margin: 0 -10px;
+  padding: 6px 10px 14px;
   /* Keep focus/scroll off the very edges; matches .focusable scroll-margin. */
   scroll-padding: 12px 0;
 }
@@ -3242,15 +3257,15 @@ body.is-phone-pair {
 
 .queue-row {
   display: grid;
-  grid-template-columns: 52px 1fr auto;
+  grid-template-columns: 56px 1fr auto;
   align-items: center;
   gap: 16px;
   width: 100%;
-  min-height: 64px;
-  padding: 8px 10px;
+  min-height: 68px;
+  padding: 10px 14px;
   border: 2px solid transparent;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
   color: inherit;
   font: inherit;
   font-weight: 500;
@@ -3279,8 +3294,8 @@ body.is-phone-pair {
 }
 
 .queue-row__art {
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
   border-radius: 8px;
   background-color: #111824;
   background-size: cover;
