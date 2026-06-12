@@ -17,6 +17,10 @@ import { loadDevices, renderSpotifyFacts } from "./views/settings.js";
 // visible and focusable, the user just gets told what to do.
 const NO_DEVICE_TOAST_EVERY_MS = 60000;
 let _noDeviceToastAt = 0;
+// playback_error cascade tracking: timestamps of recent SDK playback errors +
+// a once-per-session latch for the "browser DRM is broken" guidance toast.
+let _playbackErrorTimes = [];
+let _drmToastShown = false;
 
 async function ensureSpotifyDeviceReady() {
   if (state.spotifyDeviceId && state.spotifyPlayer) return state.spotifyDeviceId;
@@ -143,7 +147,28 @@ async function createSpotifyPlayerInternal() {
   state.spotifyPlayer.addListener("initialization_error", ({ message }) => log(`Spotify initialization error: ${message}`, "error"));
   state.spotifyPlayer.addListener("authentication_error", ({ message }) => log(`Spotify authentication error: ${message}`, "error"));
   state.spotifyPlayer.addListener("account_error", ({ message }) => log(`Spotify account error: ${message}`, "error"));
-  state.spotifyPlayer.addListener("playback_error", ({ message }) => log(`Spotify playback error: ${message}`, "error"));
+  state.spotifyPlayer.addListener("playback_error", ({ message }) => {
+    // A cascade of these means the browser's DRM layer (Widevine) is refusing
+    // Spotify's licenses and the SDK is auto-skipping track after track — an
+    // environment problem (seen on Firefox; license POSTs 403 with an empty
+    // body while the same account/tracks play fine on Chromium). Collapse the
+    // cascade into one actionable toast instead of a wall of "Playback error".
+    const now = Date.now();
+    _playbackErrorTimes = _playbackErrorTimes.filter((t) => now - t < 30000);
+    _playbackErrorTimes.push(now);
+    if (_playbackErrorTimes.length >= 2) {
+      if (!_drmToastShown) {
+        _drmToastShown = true;
+        showToast(
+          "This browser is failing Spotify's DRM checks, so tracks stop or skip. Chrome, Edge, or the TV play reliably — or hand playback to another device from Settings.",
+          "warn"
+        );
+      }
+      log(`Spotify playback error: ${message}`, "warn");
+      return;
+    }
+    log(`Spotify playback error: ${message}`, "error");
+  });
   state.spotifyPlayer.addListener("player_state_changed", (playerState) => {
     if (!playerState) {
       log("Spotify player_state_changed: null state");

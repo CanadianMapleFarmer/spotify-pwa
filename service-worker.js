@@ -1,4 +1,4 @@
-const CACHE_NAME = "spotify-tv-v45";
+const CACHE_NAME = "spotify-tv-v46";
 const ASSETS = [
   "/",
   "/index.html",
@@ -64,6 +64,11 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   const sameOrigin = url.origin === self.location.origin;
+  // Never intercept cross-origin requests (artwork CDN, fonts, Spotify SDK):
+  // we don't cache them, and a pass-through respondWith turns any fetch hiccup
+  // into a hard failure ("ServiceWorker encountered an unexpected error" →
+  // corrupt images, notably on Firefox). Let the browser handle them natively.
+  if (!sameOrigin) return;
   // App shell (HTML + JS/CSS) is network-first so a broken cached bundle can
   // never strand the app: while online we always pull fresh code and only fall
   // back to cache when offline. Other same-origin assets stay cache-first.

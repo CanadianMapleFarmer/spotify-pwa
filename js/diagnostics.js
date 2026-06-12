@@ -171,6 +171,15 @@ function logError(context, error) {
 
 function showToast(message, level = "info") {
   if (!elements.toastStack) return;
+  // Dedupe: re-showing a message that's already on screen restarts its dwell
+  // timer instead of stacking copies (error cascades fired 3 identical toasts).
+  for (const existing of elements.toastStack.children) {
+    if (existing.textContent === message && !existing.classList.contains("is-leaving")) {
+      window.clearTimeout(existing._dismissTimer);
+      existing._dismissTimer = armToastDismiss(existing, level);
+      return;
+    }
+  }
   const toast = document.createElement("div");
   toast.className = `toast ${level}`;
   toast.textContent = message;
@@ -179,8 +188,12 @@ function showToast(message, level = "info") {
   while (elements.toastStack.children.length > 3) {
     elements.toastStack.firstElementChild?.remove();
   }
-  // 10-foot reading distance needs longer dwell than a desktop toast.
-  window.setTimeout(() => {
+  toast._dismissTimer = armToastDismiss(toast, level);
+}
+
+// 10-foot reading distance needs longer dwell than a desktop toast.
+function armToastDismiss(toast, level) {
+  return window.setTimeout(() => {
     toast.classList.add("is-leaving");
     window.setTimeout(() => toast.remove(), 220);
   }, level === "error" ? 7000 : 5000);
